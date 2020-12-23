@@ -656,7 +656,7 @@
     "node-fetch": "~2.6.0",
     "react": "^16.8.6",
     "react-dom": "^16.8.6",
-    "semver": "~7.3.2",
+    "semver": "~7.3.4",
     "tmp": "^0.1.0",
     "tmp-promise": "~3.0.2",
     "tree-kill": "~1.2.2",
