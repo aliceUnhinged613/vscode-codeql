@@ -2,52 +2,15 @@ import * as fs from 'fs-extra';
 import * as glob from 'glob-promise';
 import * as yaml from 'js-yaml';
 import * as path from 'path';
-import { CancellationToken, ExtensionContext, ProgressOptions, window as Window, workspace } from 'vscode';
+import {
+  ExtensionContext,
+  Uri,
+  window as Window,
+  workspace,
+  env
+} from 'vscode';
 import { CodeQLCliServer } from './cli';
 import { logger } from './logging';
-import { QueryInfo } from './run-queries';
-
-export interface ProgressUpdate {
-  /**
-   * The current step
-   */
-  step: number;
-  /**
-   * The maximum step. This *should* be constant for a single job.
-   */
-  maxStep: number;
-  /**
-   * The current progress message
-   */
-  message: string;
-}
-
-export type ProgressCallback = (p: ProgressUpdate) => void;
-
-/**
- * This mediates between the kind of progress callbacks we want to
- * write (where we *set* current progress position and give
- * `maxSteps`) and the kind vscode progress api expects us to write
- * (which increment progress by a certain amount out of 100%)
- */
-export function withProgress<R>(
-  options: ProgressOptions,
-  task: (
-    progress: (p: ProgressUpdate) => void,
-    token: CancellationToken
-  ) => Thenable<R>
-): Thenable<R> {
-  let progressAchieved = 0;
-  return Window.withProgress(options,
-    (progress, token) => {
-      return task(p => {
-        const { message, step, maxStep } = p;
-        const increment = 100 * (step - progressAchieved) / maxStep;
-        progressAchieved = step;
-        progress.report({ message, increment });
-      }, token);
-    });
-}
 
 /**
  * Show an error message and log it to the console
@@ -55,15 +18,24 @@ export function withProgress<R>(
  * @param message The message to show.
  * @param options.outputLogger The output logger that will receive the message
  * @param options.items A set of items that will be rendered as actions in the message.
+ * @param options.fullMessage An alternate message that is added to the log, but not displayed
+ *                           in the popup. This is useful for adding extra detail to the logs
+ *                           that would be too noisy for the popup.
  *
  * @return A promise that resolves to the selected item or undefined when being dismissed.
  */
 export async function showAndLogErrorMessage(message: string, {
   outputLogger = logger,
-  items = [] as string[]
+  items = [] as string[],
+  fullMessage = undefined as (string | undefined)
 } = {}): Promise<string | undefined> {
-  return internalShowAndLog(message, items, outputLogger, Window.showErrorMessage);
+  return internalShowAndLog(dropLinesExceptInitial(message), items, outputLogger, Window.showErrorMessage, fullMessage);
 }
+
+function dropLinesExceptInitial(message: string, n = 2) {
+  return message.toString().split(/\r?\n/).slice(0, n).join('\n');
+}
+
 /**
  * Show a warning message and log it to the console
  *
@@ -97,10 +69,15 @@ export async function showAndLogInformationMessage(message: string, {
 
 type ShowMessageFn = (message: string, ...items: string[]) => Thenable<string | undefined>;
 
-async function internalShowAndLog(message: string, items: string[], outputLogger = logger,
-  fn: ShowMessageFn): Promise<string | undefined> {
+async function internalShowAndLog(
+  message: string,
+  items: string[],
+  outputLogger = logger,
+  fn: ShowMessageFn,
+  fullMessage?: string
+): Promise<string | undefined> {
   const label = 'Show Log';
-  outputLogger.log(message);
+  void outputLogger.log(fullMessage || message);
   const result = await fn(message, label, ...items);
   if (result === label) {
     outputLogger.show();
@@ -110,15 +87,59 @@ async function internalShowAndLog(message: string, items: string[], outputLogger
 
 /**
  * Opens a modal dialog for the user to make a yes/no choice.
- * @param message The message to show.
  *
- * @return `true` if the user clicks 'Yes', `false` if the user clicks 'No' or cancels the dialog.
+ * @param message The message to show.
+ * @param modal If true (the default), show a modal dialog box, otherwise dialog is non-modal and can
+ *        be closed even if the user does not make a choice.
+ *
+ * @return
+ *  `true` if the user clicks 'Yes',
+ *  `false` if the user clicks 'No' or cancels the dialog,
+ *  `undefined` if the dialog is closed without the user making a choice.
  */
-export async function showBinaryChoiceDialog(message: string): Promise<boolean> {
+export async function showBinaryChoiceDialog(message: string, modal = true): Promise<boolean | undefined> {
   const yesItem = { title: 'Yes', isCloseAffordance: false };
   const noItem = { title: 'No', isCloseAffordance: true };
-  const chosenItem = await Window.showInformationMessage(message, { modal: true }, yesItem, noItem);
+  const chosenItem = await Window.showInformationMessage(message, { modal }, yesItem, noItem);
+  if (!chosenItem) {
+    return undefined;
+  }
   return chosenItem?.title === yesItem.title;
+}
+
+/**
+ * Opens a modal dialog for the user to make a yes/no choice.
+ *
+ * @param message The message to show.
+ * @param modal If true (the default), show a modal dialog box, otherwise dialog is non-modal and can
+ *        be closed even if the user does not make a choice.
+ *
+ * @return
+ *  `true` if the user clicks 'Yes',
+ *  `false` if the user clicks 'No' or cancels the dialog,
+ *  `undefined` if the dialog is closed without the user making a choice.
+ */
+export async function showBinaryChoiceWithUrlDialog(message: string, url: string): Promise<boolean | undefined> {
+  const urlItem = { title: 'More Information', isCloseAffordance: false };
+  const yesItem = { title: 'Yes', isCloseAffordance: false };
+  const noItem = { title: 'No', isCloseAffordance: true };
+  let chosenItem;
+
+  // Keep the dialog open as long as the user is clicking the 'more information' option.
+  // To prevent an infinite loop, if the user clicks 'more information' 5 times, close the dialog and return cancelled
+  let count = 0;
+  do {
+    chosenItem = await Window.showInformationMessage(message, { modal: true }, urlItem, yesItem, noItem);
+    if (chosenItem === urlItem) {
+      await env.openExternal(Uri.parse(url, true));
+    }
+    count++;
+  } while (chosenItem === urlItem && count < 5);
+
+  if (!chosenItem || chosenItem.title === urlItem.title) {
+    return undefined;
+  }
+  return chosenItem.title === yesItem.title;
 }
 
 /**
@@ -143,24 +164,6 @@ export function getOnDiskWorkspaceFolders() {
       diskWorkspaceFolders.push(workspaceFolder.uri.fsPath);
   }
   return diskWorkspaceFolders;
-}
-
-/**
- * Gets a human-readable name for an evaluated query.
- * Uses metadata if it exists, and defaults to the query file name.
- */
-export function getQueryName(query: QueryInfo) {
-  // Queries run through quick evaluation are not usually the entire query file.
-  // Label them differently and include the line numbers.
-  if (query.quickEvalPosition !== undefined) {
-    const { line, endLine, fileName } = query.quickEvalPosition;
-    const lineInfo = line === endLine ? `${line}` : `${line}-${endLine}`;
-    return `Quick evaluation of ${path.basename(fileName)}:${lineInfo}`;
-  } else if (query.metadata && query.metadata.name) {
-    return query.metadata.name;
-  } else {
-    return path.basename(query.program.queryPath);
-  }
 }
 
 /**
@@ -251,22 +254,16 @@ function createRateLimitedResult(): RateLimitedResult {
   };
 }
 
-
-export type DatasetFolderInfo = {
-  dbscheme: string;
-  qlpack: string;
-}
-
 export async function getQlPackForDbscheme(cliServer: CodeQLCliServer, dbschemePath: string): Promise<string> {
   const qlpacks = await cliServer.resolveQlpacks(getOnDiskWorkspaceFolders());
   const packs: { packDir: string | undefined; packName: string }[] =
     Object.entries(qlpacks).map(([packName, dirs]) => {
       if (dirs.length < 1) {
-        logger.log(`In getQlPackFor ${dbschemePath}, qlpack ${packName} has no directories`);
+        void logger.log(`In getQlPackFor ${dbschemePath}, qlpack ${packName} has no directories`);
         return { packName, packDir: undefined };
       }
       if (dirs.length > 1) {
-        logger.log(`In getQlPackFor ${dbschemePath}, qlpack ${packName} has more than one directory; arbitrarily choosing the first`);
+        void logger.log(`In getQlPackFor ${dbschemePath}, qlpack ${packName} has more than one directory; arbitrarily choosing the first`);
       }
       return {
         packName,
@@ -275,7 +272,7 @@ export async function getQlPackForDbscheme(cliServer: CodeQLCliServer, dbschemeP
     });
   for (const { packDir, packName } of packs) {
     if (packDir !== undefined) {
-      const qlpack = yaml.safeLoad(await fs.readFile(path.join(packDir, 'qlpack.yml'), 'utf8'));
+      const qlpack = yaml.safeLoad(await fs.readFile(path.join(packDir, 'qlpack.yml'), 'utf8')) as { dbscheme: string };
       if (qlpack.dbscheme !== undefined && path.basename(qlpack.dbscheme) === path.basename(dbschemePath)) {
         return packName;
       }
@@ -284,7 +281,7 @@ export async function getQlPackForDbscheme(cliServer: CodeQLCliServer, dbschemeP
   throw new Error(`Could not find qlpack file for dbscheme ${dbschemePath}`);
 }
 
-export async function resolveDatasetFolder(cliServer: CodeQLCliServer, datasetFolder: string): Promise<DatasetFolderInfo> {
+export async function getPrimaryDbscheme(datasetFolder: string): Promise<string> {
   const dbschemes = await glob(path.join(datasetFolder, '*.dbscheme'));
 
   if (dbschemes.length < 1) {
@@ -293,31 +290,30 @@ export async function resolveDatasetFolder(cliServer: CodeQLCliServer, datasetFo
 
   dbschemes.sort();
   const dbscheme = dbschemes[0];
-  if (dbschemes.length > 1) {
-    Window.showErrorMessage(`Found multiple dbschemes in ${datasetFolder} during quick query; arbitrarily choosing the first, ${dbscheme}, to decide what library to use.`);
-  }
 
-  const qlpack = await getQlPackForDbscheme(cliServer, dbscheme);
-  return { dbscheme, qlpack };
+  if (dbschemes.length > 1) {
+    void Window.showErrorMessage(`Found multiple dbschemes in ${datasetFolder} during quick query; arbitrarily choosing the first, ${dbscheme}, to decide what library to use.`);
+  }
+  return dbscheme;
 }
 
 /**
  * A cached mapping from strings to value of type U.
  */
 export class CachedOperation<U> {
-  private readonly operation: (t: string) => Promise<U>;
+  private readonly operation: (t: string, ...args: any[]) => Promise<U>;
   private readonly cached: Map<string, U>;
   private readonly lru: string[];
   private readonly inProgressCallbacks: Map<string, [(u: U) => void, (reason?: any) => void][]>;
 
-  constructor(operation: (t: string) => Promise<U>, private cacheSize = 100) {
+  constructor(operation: (t: string, ...args: any[]) => Promise<U>, private cacheSize = 100) {
     this.operation = operation;
     this.lru = [];
     this.inProgressCallbacks = new Map<string, [(u: U) => void, (reason?: any) => void][]>();
     this.cached = new Map<string, U>();
   }
 
-  async get(t: string): Promise<U> {
+  async get(t: string, ...args: any[]): Promise<U> {
     // Try and retrieve from the cache
     const fromCache = this.cached.get(t);
     if (fromCache !== undefined) {
@@ -338,7 +334,7 @@ export class CachedOperation<U> {
     const callbacks: [(u: U) => void, (reason?: any) => void][] = [];
     this.inProgressCallbacks.set(t, callbacks);
     try {
-      const result = await this.operation(t);
+      const result = await this.operation(t, ...args);
       callbacks.forEach(f => f[0](result));
       this.inProgressCallbacks.delete(t);
       if (this.lru.length > this.cacheSize) {
@@ -356,4 +352,75 @@ export class CachedOperation<U> {
       this.inProgressCallbacks.delete(t);
     }
   }
+}
+
+
+
+/**
+ * The following functions al heuristically determine metadata about databases.
+ */
+
+/**
+ * Note that this heuristic is only being used for backwards compatibility with
+ * CLI versions before the langauge name was introduced to dbInfo. Features
+ * that do not require backwards compatibility should call
+ * `cli.CodeQLCliServer.resolveDatabase` and use the first entry in the
+ * `languages` property.
+ *
+ * @see cli.CliVersionConstraint.supportsLanguageName
+ * @see cli.CodeQLCliServer.resolveDatabase
+ */
+const dbSchemeToLanguage = {
+  'semmlecode.javascript.dbscheme': 'javascript',
+  'semmlecode.cpp.dbscheme': 'cpp',
+  'semmlecode.dbscheme': 'java',
+  'semmlecode.python.dbscheme': 'python',
+  'semmlecode.csharp.dbscheme': 'csharp',
+  'go.dbscheme': 'go'
+};
+
+/**
+ * Returns the initial contents for an empty query, based on the language of the selected
+ * databse.
+ *
+ * First try to use the given language name. If that doesn't exist, try to infer it based on
+ * dbscheme. Otherwise return no import statement.
+ *
+ * @param language the database language or empty string if unknown
+ * @param dbscheme path to the dbscheme file
+ *
+ * @returns an import and empty select statement appropriate for the selected language
+ */
+export function getInitialQueryContents(language: string, dbscheme: string) {
+  if (!language) {
+    const dbschemeBase = path.basename(dbscheme) as keyof typeof dbSchemeToLanguage;
+    language = dbSchemeToLanguage[dbschemeBase];
+  }
+
+  return language
+    ? `import ${language}\n\nselect ""`
+    : 'select ""';
+}
+
+/**
+ * Heuristically determines if the directory passed in corresponds
+ * to a database root.
+ *
+ * @param maybeRoot
+ */
+export async function isLikelyDatabaseRoot(maybeRoot: string) {
+  const [a, b, c] = (await Promise.all([
+    // databases can have either .dbinfo or codeql-database.yml.
+    fs.pathExists(path.join(maybeRoot, '.dbinfo')),
+    fs.pathExists(path.join(maybeRoot, 'codeql-database.yml')),
+
+    // they *must* have a db-{language} folder
+    glob('db-*/', { cwd: maybeRoot })
+  ]));
+
+  return !!((a || b) && c);
+}
+
+export function isLikelyDbLanguageFolder(dbPath: string) {
+  return !!path.basename(dbPath).startsWith('db-');
 }

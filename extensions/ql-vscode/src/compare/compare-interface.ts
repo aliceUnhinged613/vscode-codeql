@@ -1,4 +1,4 @@
-import { DisposableObject } from '../vscode-utils/disposable-object';
+import { DisposableObject } from '../pure/disposable-object';
 import {
   WebviewPanel,
   ExtensionContext,
@@ -14,13 +14,12 @@ import {
   FromCompareViewMessage,
   ToCompareViewMessage,
   QueryCompareResult,
-} from '../interface-types';
+} from '../pure/interface-types';
 import { Logger } from '../logging';
 import { CodeQLCliServer } from '../cli';
 import { DatabaseManager } from '../databases';
 import { getHtmlForWebview, jumpToLocation } from '../interface-utils';
-import { adaptSchema, adaptBqrs, RawResultSet } from '../adapt';
-import { BQRSInfo } from '../bqrs-cli-types';
+import { transformBqrsResultSet, RawResultSet, BQRSInfo } from '../pure/bqrs-cli-types';
 import resultsDiff from './resultsDiff';
 
 interface ComparePair {
@@ -174,7 +173,7 @@ export class CompareInterfaceManager extends DisposableObject {
         break;
 
       case 'changeCompare':
-        this.changeTable(msg.newResultSetName);
+        await this.changeTable(msg.newResultSetName);
         break;
 
       case 'viewSourceFile':
@@ -257,8 +256,7 @@ export class CompareInterfaceManager extends DisposableObject {
       resultsPath,
       resultSetName
     );
-    const adaptedSchema = adaptSchema(schema);
-    return adaptBqrs(adaptedSchema, chunk);
+    return transformBqrsResultSet(schema, chunk);
   }
 
   private compareResults(
@@ -269,11 +267,11 @@ export class CompareInterfaceManager extends DisposableObject {
     return resultsDiff(fromResults, toResults);
   }
 
-  private openQuery(kind: 'from' | 'to') {
+  private async openQuery(kind: 'from' | 'to') {
     const toOpen =
       kind === 'from' ? this.comparePair?.from : this.comparePair?.to;
     if (toOpen) {
-      this.showQueryResultsCallback(toOpen);
+      await this.showQueryResultsCallback(toOpen);
     }
   }
 }

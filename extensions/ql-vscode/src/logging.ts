@@ -1,5 +1,5 @@
 import { window as Window, OutputChannel, Progress, Disposable } from 'vscode';
-import { DisposableObject } from './vscode-utils/disposable-object';
+import { DisposableObject } from './pure/disposable-object';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 
@@ -28,9 +28,16 @@ export interface Logger {
   removeAdditionalLogLocation(location: string | undefined): void;
 
   /**
-   * The base location location where all side log files are stored.
+   * The base location where all side log files are stored.
    */
   getBaseLocation(): string | undefined;
+
+  /**
+   * Sets the location where logs are stored.
+   * @param storagePath The path where logs are stored.
+   * @param isCustomLogDirectory Whether the logs are stored in a custom, user-specified directory.
+   */
+  setLogStoragePath(storagePath: string, isCustomLogDirectory: boolean): Promise<void>;
 }
 
 export type ProgressReporter = Progress<{ message: string }>;
@@ -40,18 +47,24 @@ export class OutputChannelLogger extends DisposableObject implements Logger {
   public readonly outputChannel: OutputChannel;
   private readonly additionalLocations = new Map<string, AdditionalLogLocation>();
   private additionalLogLocationPath: string | undefined;
+  isCustomLogDirectory: boolean;
 
   constructor(private title: string) {
     super();
     this.outputChannel = Window.createOutputChannel(title);
     this.push(this.outputChannel);
+    this.isCustomLogDirectory = false;
   }
 
-  init(storagePath: string): void {
+  async setLogStoragePath(storagePath: string, isCustomLogDirectory: boolean): Promise<void> {
     this.additionalLogLocationPath = path.join(storagePath, this.title);
 
-    // clear out any old state from previous runs
-    fs.remove(this.additionalLogLocationPath);
+    this.isCustomLogDirectory = isCustomLogDirectory;
+
+    if (!this.isCustomLogDirectory) {
+      // clear out any old state from previous runs
+      await fs.remove(this.additionalLogLocationPath);
+    }
   }
 
   /**
@@ -80,7 +93,7 @@ export class OutputChannelLogger extends DisposableObject implements Logger {
         this.outputChannel.appendLine(separator);
         this.outputChannel.appendLine(msg);
         this.outputChannel.appendLine(separator);
-        additional = new AdditionalLogLocation(logPath);
+        additional = new AdditionalLogLocation(logPath, !this.isCustomLogDirectory);
         this.additionalLocations.set(logPath, additional);
         this.track(additional);
       }
@@ -112,7 +125,7 @@ export class OutputChannelLogger extends DisposableObject implements Logger {
 }
 
 class AdditionalLogLocation extends Disposable {
-  constructor(private location: string) {
+  constructor(private location: string, private shouldDeleteLogs: boolean) {
     super(() => { /**/ });
   }
 
@@ -128,7 +141,9 @@ class AdditionalLogLocation extends Disposable {
   }
 
   async dispose(): Promise<void> {
-    await fs.remove(this.location);
+    if (this.shouldDeleteLogs) {
+      await fs.remove(this.location);
+    }
   }
 }
 

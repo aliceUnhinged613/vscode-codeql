@@ -4,7 +4,7 @@ import * as sinonChai from 'sinon-chai';
 import 'mocha';
 import * as path from 'path';
 
-import { gatherQlFiles } from '../../src/files';
+import { gatherQlFiles } from '../../src/pure/files';
 
 chai.use(sinonChai);
 const expect = chai.expect;
@@ -13,9 +13,6 @@ describe('files', () => {
   const dataDir = path.join(path.dirname(__dirname), 'data');
   const data2Dir = path.join(path.dirname(__dirname), 'data2');
 
-  it('should pass', () => {
-    expect(true).to.be.eq(true);
-  });
   it('should find one file', async () => {
     const singleFile = path.join(dataDir, 'query.ql');
     const result = await gatherQlFiles([singleFile]);
@@ -50,11 +47,12 @@ describe('files', () => {
   });
 
   it('should scan a directory', async () => {
-    const singleFile = path.join(dataDir, 'query.ql');
-    const otherFile = path.join(dataDir, 'multiple-result-sets.ql');
+    const file1 = path.join(dataDir, 'compute-default-strings.ql');
+    const file2 = path.join(dataDir, 'multiple-result-sets.ql');
+    const file3 = path.join(dataDir, 'query.ql');
 
     const result = await gatherQlFiles([dataDir]);
-    expect(result.sort()).to.deep.equal([[otherFile, singleFile], true]);
+    expect(result.sort()).to.deep.equal([[file1, file2, file3], true]);
   });
 
   it('should scan a directory and some files', async () => {
@@ -67,10 +65,12 @@ describe('files', () => {
   });
 
   it('should avoid duplicates', async () => {
-    const singleFile = path.join(dataDir, 'query.ql');
-    const otherFile = path.join(dataDir, 'multiple-result-sets.ql');
+    const file1 = path.join(dataDir, 'compute-default-strings.ql');
+    const file2 = path.join(dataDir, 'multiple-result-sets.ql');
+    const file3 = path.join(dataDir, 'query.ql');
 
-    const result = await gatherQlFiles([singleFile, dataDir, otherFile]);
-    expect(result.sort()).to.deep.equal([[singleFile, otherFile], true]);
+    const result = await gatherQlFiles([file1, dataDir, file3]);
+    result[0].sort();
+    expect(result.sort()).to.deep.equal([[file1, file2, file3], true]);
   });
 });

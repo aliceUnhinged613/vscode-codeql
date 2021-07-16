@@ -8,17 +8,19 @@
       "request": "launch",
       "runtimeExecutable": "${execPath}",
       "args": [
-        "--extensionDevelopmentPath=${workspaceRoot}/extensions/ql-vscode"
+        "--extensionDevelopmentPath=${workspaceRoot}/extensions/ql-vscode",
+        // Add a reference to a workspace to open. Eg-
+        // "${workspaceRoot}/../vscode-codeql-starter/vscode-codeql-starter.code-workspace"
       ],
       "stopOnEntry": false,
       "sourceMaps": true,
       "outFiles": [
         "${workspaceRoot}/extensions/ql-vscode/out/**/*.js",
       ],
-      "preLaunchTask": "Build",
       "env": {
-        // uncomment to allow debugging the language server Java process from a remote java debugger
-        // "DEBUG_LANGUAGE_SERVER": "true"
+        // change to 'true' debug the IDE or Query servers
+        "IDE_SERVER_JAVA_DEBUG": "false",
+        "QUERY_SERVER_JAVA_DEBUG": "false",
       }
     },
     {
@@ -44,7 +46,6 @@
       "port": 9229,
       "stopOnEntry": false,
       "sourceMaps": true,
-      "preLaunchTask": "Build",
       "console": "integratedTerminal",
       "internalConsoleOptions": "neverOpen"
     },
@@ -62,7 +63,6 @@
       "outFiles": [
         "${workspaceRoot}/extensions/ql-vscode/out/**/*.js",
       ],
-      "preLaunchTask": "Build"
     },
     {
       "name": "Launch Integration Tests - Minimal Workspace (vscode-codeql)",
@@ -79,7 +79,25 @@
       "outFiles": [
         "${workspaceRoot}/extensions/ql-vscode/out/**/*.js",
       ],
-      "preLaunchTask": "Build"
+    },
+    {
+      "name": "Launch Integration Tests - With CLI",
+      "type": "extensionHost",
+      "request": "launch",
+      "runtimeExecutable": "${execPath}",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceRoot}/extensions/ql-vscode",
+        "--extensionTestsPath=${workspaceRoot}/extensions/ql-vscode/out/vscode-tests/cli-integration/index",
+        "${workspaceRoot}/extensions/ql-vscode/src/vscode-tests/cli-integration/data",
+        // Add a path to a checked out instance of the codeql repository so the libraries are
+        // available in the workspace for the tests.
+        // "${workspaceRoot}/../codeql"
+      ],
+      "stopOnEntry": false,
+      "sourceMaps": true,
+      "outFiles": [
+        "${workspaceRoot}/extensions/ql-vscode/out/**/*.js",
+      ],
     }
   ]
 }

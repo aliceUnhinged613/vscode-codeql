@@ -5,7 +5,7 @@ import * as Rdom from 'react-dom';
 import {
   ToCompareViewMessage,
   SetComparisonsMessage,
-} from '../../interface-types';
+} from '../../pure/interface-types';
 import CompareSelector from './CompareSelector';
 import { vscode } from '../../view/vscode-api';
 import CompareTable from './CompareTable';
@@ -21,7 +21,7 @@ const emptyComparison: SetComparisonsMessage = {
   message: 'Empty comparison'
 };
 
-export function Compare(_: {}): JSX.Element {
+export function Compare(_: Record<string, never>): JSX.Element {
   const [comparison, setComparison] = useState<SetComparisonsMessage>(
     emptyComparison
   );
@@ -38,7 +38,9 @@ export function Compare(_: {}): JSX.Element {
             setComparison(msg);
         }
       } else {
-        console.error(`Invalid event origin ${evt.origin}`);
+        // sanitize origin
+        const origin = evt.origin.replace(/\n|\r/g, '');
+        console.error(`Invalid event origin ${origin}`);
       }
     });
   });
@@ -64,8 +66,8 @@ export function Compare(_: {}): JSX.Element {
         {hasRows ? (
           <CompareTable comparison={comparison}></CompareTable>
         ) : (
-            <div className="vscode-codeql__compare-message">{message}</div>
-          )}
+          <div className="vscode-codeql__compare-message">{message}</div>
+        )}
       </>
     );
   } catch (err) {

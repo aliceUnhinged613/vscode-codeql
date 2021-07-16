@@ -1,21 +1,28 @@
 import * as Sarif from 'sarif';
-import * as path from 'path';
-import { LocationStyle, ResolvableLocationValue } from './bqrs-types';
+import { ResolvableLocationValue } from './bqrs-cli-types';
 
 export interface SarifLink {
   dest: number;
   text: string;
 }
 
+// The type of a result that has no associated location.
+// hint is a string intended for display to the user
+// that explains why there is no location.
+interface NoLocation {
+  hint: string;
+}
 
 type ParsedSarifLocation =
-  | ResolvableLocationValue
-  // Resolvable locations have a `file` field, but it will sometimes include
+  | (ResolvableLocationValue & {
+
+    userVisibleFile: string;
+  })
+  // Resolvable locations have a `uri` field, but it will sometimes include
   // a source location prefix, which contains build-specific information the user
   // doesn't really need to see. We ensure that `userVisibleFile` will not contain
   // that, and is appropriate for display in the UI.
-  & { userVisibleFile: string }
-  | { t: 'NoLocation'; hint: string };
+  | NoLocation;
 
 export type SarifMessageComponent = string | SarifLink
 
@@ -23,7 +30,10 @@ export type SarifMessageComponent = string | SarifLink
  * Unescape "[", "]" and "\\" like in sarif plain text messages
  */
 export function unescapeSarifText(message: string): string {
-  return message.replace(/\\\[/g, '[').replace(/\\\]/g, ']').replace(/\\\\/, '\\');
+  return message
+    .replace(/\\\[/g, '[')
+    .replace(/\\\]/g, ']')
+    .replace(/\\\\/g, '\\');
 }
 
 export function parseSarifPlainTextMessage(message: string): SarifMessageComponent[] {
@@ -54,71 +64,98 @@ export function parseSarifPlainTextMessage(message: string): SarifMessageCompone
  * @param sourceLocationPrefix The source location prefix of a database. May be
  * unix style `/foo/bar/baz` or windows-style `C:\foo\bar\baz`.
  * @param sarifRelativeUri A uri relative to sourceLocationPrefix.
- * @returns A string that is valid for the `.file` field of a `FivePartLocation`:
+ *
+ * @returns A URI string that is valid for the `.file` field of a `FivePartLocation`:
  * directory separators are normalized, but drive letters `C:` may appear.
  */
-export function getPathRelativeToSourceLocationPrefix(sourceLocationPrefix: string, sarifRelativeUui: string) {
-  const normalizedSourceLocationPrefix = sourceLocationPrefix.replace(/\\/g, '/');
-  return path.join(normalizedSourceLocationPrefix, decodeURIComponent(sarifRelativeUui));
+export function getPathRelativeToSourceLocationPrefix(
+  sourceLocationPrefix: string,
+  sarifRelativeUri: string
+) {
+  // convert a platform specific path into encoded path uri segments
+  // need to be careful about drive letters and ensure that there
+  // is a starting '/'
+  let prefix = '';
+  if (sourceLocationPrefix[1] === ':') {
+    // assume this is a windows drive separator
+    prefix = sourceLocationPrefix.substring(0, 2);
+    sourceLocationPrefix = sourceLocationPrefix.substring(2);
+  }
+  const normalizedSourceLocationPrefix = prefix + sourceLocationPrefix.replace(/\\/g, '/')
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/');
+  const slashPrefix = normalizedSourceLocationPrefix.startsWith('/') ? '' : '/';
+  return `file:${slashPrefix + normalizedSourceLocationPrefix}/${sarifRelativeUri}`;
 }
 
-export function parseSarifLocation(loc: Sarif.Location, sourceLocationPrefix: string): ParsedSarifLocation {
+/**
+ *
+ * @param loc specifies the database-relative location of the source location
+ * @param sourceLocationPrefix a file path (usually a full path) to the database containing the source location.
+ */
+export function parseSarifLocation(
+  loc: Sarif.Location,
+  sourceLocationPrefix: string
+): ParsedSarifLocation {
   const physicalLocation = loc.physicalLocation;
   if (physicalLocation === undefined)
-    return { t: 'NoLocation', hint: 'no physical location' };
+    return { hint: 'no physical location' };
   if (physicalLocation.artifactLocation === undefined)
-    return { t: 'NoLocation', hint: 'no artifact location' };
+    return { hint: 'no artifact location' };
   if (physicalLocation.artifactLocation.uri === undefined)
-    return { t: 'NoLocation', hint: 'artifact location has no uri' };
+    return { hint: 'artifact location has no uri' };
 
   // This is not necessarily really an absolute uri; it could either be a
   // file uri or a relative uri.
   const uri = physicalLocation.artifactLocation.uri;
 
   const fileUriRegex = /^file:/;
-  const effectiveLocation = uri.match(fileUriRegex) ?
-    decodeURIComponent(uri.replace(fileUriRegex, '')) :
-    getPathRelativeToSourceLocationPrefix(sourceLocationPrefix, uri);
-  const userVisibleFile = uri.match(fileUriRegex) ?
-    decodeURIComponent(uri.replace(fileUriRegex, '')) :
-    uri;
+  const hasFilePrefix = uri.match(fileUriRegex);
+  const effectiveLocation = hasFilePrefix
+    ? uri
+    : getPathRelativeToSourceLocationPrefix(sourceLocationPrefix, uri);
+  const userVisibleFile = decodeURIComponent(hasFilePrefix
+    ? uri.replace(fileUriRegex, '')
+    : uri);
 
   if (physicalLocation.region === undefined) {
     // If the region property is absent, the physicalLocation object refers to the entire file.
     // Source: https://docs.oasis-open.org/sarif/sarif/v2.1.0/cs01/sarif-v2.1.0-cs01.html#_Toc16012638.
-    // TODO: Do we get here if we provide a non-filesystem URL?
     return {
-      t: LocationStyle.WholeFile,
-      file: effectiveLocation,
-      userVisibleFile,
-    };
+      uri: effectiveLocation,
+      userVisibleFile
+    } as ParsedSarifLocation;
   } else {
     const region = physicalLocation.region;
     // We assume that the SARIF we're given always has startLine
     // This is not mandated by the SARIF spec, but should be true of
     // SARIF output by our own tools.
-    const lineStart = region.startLine!;
+    const startLine = region.startLine!;
 
     // These defaults are from SARIF 2.1.0 spec, section 3.30.2, "Text Regions"
     // https://docs.oasis-open.org/sarif/sarif/v2.1.0/cs01/sarif-v2.1.0-cs01.html#_Ref493492556
-    const lineEnd = region.endLine === undefined ? lineStart : region.endLine;
-    const colStart = region.startColumn === undefined ? 1 : region.startColumn;
+    const endLine = region.endLine === undefined ? startLine : region.endLine;
+    const startColumn = region.startColumn === undefined ? 1 : region.startColumn;
 
     // We also assume that our tools will always supply `endColumn` field, which is
     // fortunate, since the SARIF spec says that it defaults to the end of the line, whose
     // length we don't know at this point in the code.
     //
     // It is off by one with respect to the way vscode counts columns in selections.
-    const colEnd = region.endColumn! - 1;
+    const endColumn = region.endColumn! - 1;
 
     return {
-      t: LocationStyle.FivePart,
-      file: effectiveLocation,
+      uri: effectiveLocation,
       userVisibleFile,
-      lineStart,
-      colStart,
-      lineEnd,
-      colEnd,
+      startLine,
+      startColumn,
+      endLine,
+      endColumn,
     };
   }
+}
+
+export function isNoLocation(loc: ParsedSarifLocation): loc is NoLocation {
+  return 'hint' in loc;
 }

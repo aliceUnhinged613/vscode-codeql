@@ -1,22 +1,22 @@
 import * as React from 'react';
 
-import { ResultValue } from '../adapt';
 import { renderLocation } from './result-table-utils';
+import { ColumnValue } from '../pure/bqrs-cli-types';
 
 interface Props {
-  value: ResultValue;
+  value: ColumnValue;
   databaseUri: string;
 }
 
 export default function RawTableValue(props: Props): JSX.Element {
   const v = props.value;
-  if (typeof v === 'string') {
-    return <span>{v}</span>;
+  if (
+    typeof v === 'string'
+    || typeof v === 'number'
+    || typeof v === 'boolean'
+  ) {
+    return <span>{v.toString()}</span>;
   }
-  else if ('uri' in v) {
-    return <a href={v.uri}>{v.uri}</a>;
-  }
-  else {
-    return renderLocation(v.location, v.label, props.databaseUri);
-  }
+
+  return renderLocation(v.url, v.label, props.databaseUri);
 }

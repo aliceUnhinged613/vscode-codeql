@@ -1,16 +1,20 @@
 import * as cp from 'child_process';
 import * as path from 'path';
-import { DisposableObject } from './vscode-utils/disposable-object';
-import { Disposable } from 'vscode';
-import { CancellationToken, createMessageConnection, MessageConnection, RequestType } from 'vscode-jsonrpc';
+import { DisposableObject } from './pure/disposable-object';
+import { Disposable, CancellationToken, commands } from 'vscode';
+import { createMessageConnection, MessageConnection, RequestType } from 'vscode-jsonrpc';
 import * as cli from './cli';
 import { QueryServerConfig } from './config';
 import { Logger, ProgressReporter } from './logging';
-import { completeQuery, EvaluationResult, progress, ProgressMessage, WithProgressId } from './messages';
-import * as messages from './messages';
+import { completeQuery, EvaluationResult, progress, ProgressMessage, WithProgressId } from './pure/messages';
+import * as messages from './pure/messages';
+import { ProgressCallback, ProgressTask } from './commandRunner';
+import * as fs from 'fs-extra';
+import * as helpers from './helpers';
 
 type ServerOpts = {
   logger: Logger;
+  contextStoragePath: string;
 }
 
 /** A running query server process and its associated message connection. */
@@ -26,7 +30,7 @@ class ServerProcess implements Disposable {
   }
 
   dispose(): void {
-    this.logger.log('Stopping query server...');
+    void this.logger.log('Stopping query server...');
     this.connection.dispose();
     this.child.stdin!.end();
     this.child.stderr!.destroy();
@@ -34,7 +38,7 @@ class ServerProcess implements Disposable {
 
     // On Windows, we usually have to terminate the process before closing its stdout.
     this.child.stdout!.destroy();
-    this.logger.log('Stopped query server.');
+    void this.logger.log('Stopped query server.');
   }
 }
 
@@ -47,28 +51,62 @@ type WithProgressReporting = (task: (progress: ProgressReporter, token: Cancella
  * to restart it (which disposes the existing process and starts a new one).
  */
 export class QueryServerClient extends DisposableObject {
+
   serverProcess?: ServerProcess;
   evaluationResultCallbacks: { [key: number]: (res: EvaluationResult) => void };
   progressCallbacks: { [key: number]: ((res: ProgressMessage) => void) | undefined };
   nextCallback: number;
   nextProgress: number;
   withProgressReporting: WithProgressReporting;
+
+  private readonly queryServerStartListeners = [] as ProgressTask<void>[];
+
+  // Can't use standard vscode EventEmitter here since they do not cause the calling
+  // function to fail if one of the event handlers fail. This is something that
+  // we need here.
+  readonly onDidStartQueryServer = (e: ProgressTask<void>) => {
+    this.queryServerStartListeners.push(e);
+  }
+
   public activeQueryName: string | undefined;
 
-  constructor(readonly config: QueryServerConfig, readonly cliServer: cli.CodeQLCliServer, readonly opts: ServerOpts, withProgressReporting: WithProgressReporting) {
+  constructor(
+    readonly config: QueryServerConfig,
+    readonly cliServer: cli.CodeQLCliServer,
+    readonly opts: ServerOpts,
+    withProgressReporting: WithProgressReporting
+  ) {
     super();
     // When the query server configuration changes, restart the query server.
-    if (config.onDidChangeQueryServerConfiguration !== undefined) {
-      this.push(config.onDidChangeQueryServerConfiguration(async () => {
-        this.logger.log('Restarting query server due to configuration changes...');
-        await this.restartQueryServer();
-      }, this));
+    if (config.onDidChangeConfiguration !== undefined) {
+      this.push(config.onDidChangeConfiguration(() =>
+        commands.executeCommand('codeQL.restartQueryServer')));
     }
     this.withProgressReporting = withProgressReporting;
     this.nextCallback = 0;
     this.nextProgress = 0;
     this.progressCallbacks = {};
     this.evaluationResultCallbacks = {};
+  }
+
+  async initLogger() {
+    let storagePath = this.opts.contextStoragePath;
+    let isCustomLogDirectory = false;
+    if (this.config.customLogDirectory) {
+      try {
+        if (!(await fs.pathExists(this.config.customLogDirectory))) {
+          await fs.mkdir(this.config.customLogDirectory);
+        }
+        void this.logger.log(`Saving query server logs to user-specified directory: ${this.config.customLogDirectory}.`);
+        storagePath = this.config.customLogDirectory;
+        isCustomLogDirectory = true;
+      } catch (e) {
+        void helpers.showAndLogErrorMessage(`${this.config.customLogDirectory} is not a valid directory. Logs will be stored in a temporary workspace directory instead.`);
+      }
+    }
+
+    await this.logger.setLogStoragePath(storagePath, isCustomLogDirectory);
+
   }
 
   get logger(): Logger {
@@ -80,14 +118,24 @@ export class QueryServerClient extends DisposableObject {
     if (this.serverProcess !== undefined) {
       this.disposeAndStopTracking(this.serverProcess);
     } else {
-      this.logger.log('No server process to be stopped.');
+      void this.logger.log('No server process to be stopped.');
     }
   }
 
   /** Restarts the query server by disposing of the current server process and then starting a new one. */
-  async restartQueryServer(): Promise<void> {
+  async restartQueryServer(
+    progress: ProgressCallback,
+    token: CancellationToken
+  ): Promise<void> {
     this.stopQueryServer();
     await this.startQueryServer();
+
+    // Ensure we await all responses from event handlers so that
+    // errors can be properly reported to the user.
+    await Promise.all(this.queryServerStartListeners.map(handler => handler(
+      progress,
+      token
+    )));
   }
 
   showLog(): void {
@@ -102,11 +150,31 @@ export class QueryServerClient extends DisposableObject {
 
   /** Starts a new query server process, sending progress messages to the given reporter. */
   private async startQueryServerImpl(progressReporter: ProgressReporter): Promise<void> {
+    await this.initLogger();
     const ramArgs = await this.cliServer.resolveRam(this.config.queryMemoryMb, progressReporter);
     const args = ['--threads', this.config.numThreads.toString()].concat(ramArgs);
+
+    if (this.config.saveCache) {
+      args.push('--save-cache');
+    }
+
+    if (this.config.cacheSize > 0) {
+      args.push('--max-disk-cache');
+      args.push(this.config.cacheSize.toString());
+    }
+
+    if (await this.cliServer.cliConstraints.supportsDatabaseRegistration()) {
+      args.push('--require-db-registration');
+    }
+
     if (this.config.debug) {
       args.push('--debug', '--tuple-counting');
     }
+
+    if (cli.shouldDebugQueryServer()) {
+      args.push('-J=-agentlib:jdwp=transport=dt_socket,address=localhost:9010,server=y,suspend=n,quiet=y');
+    }
+
     const child = cli.spawnServer(
       this.config.codeQlPath,
       'CodeQL query server',
@@ -124,9 +192,8 @@ export class QueryServerClient extends DisposableObject {
     const connection = createMessageConnection(child.stdout, child.stdin);
     connection.onRequest(completeQuery, res => {
       if (!(res.runId in this.evaluationResultCallbacks)) {
-        this.logger.log(`No callback associated with run id ${res.runId}, continuing without executing any callback`);
-      }
-      else {
+        void this.logger.log(`No callback associated with run id ${res.runId}, continuing without executing any callback`);
+      } else {
         const baseLocation = this.logger.getBaseLocation();
         if (baseLocation && this.activeQueryName) {
           res.logFileLocation = path.join(baseLocation, this.activeQueryName);
@@ -141,7 +208,7 @@ export class QueryServerClient extends DisposableObject {
         callback(res);
       }
     });
-    this.serverProcess = new ServerProcess(child, connection, this.opts.logger);
+    this.serverProcess = new ServerProcess(child, connection, this.logger);
     // Ensure the server process is disposed together with this client.
     this.track(this.serverProcess);
     connection.listen();

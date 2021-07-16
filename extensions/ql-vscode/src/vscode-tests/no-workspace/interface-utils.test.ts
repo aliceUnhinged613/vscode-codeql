@@ -8,8 +8,7 @@ import {
   fileUriToWebviewUri,
   tryResolveLocation,
 } from '../../interface-utils';
-import { getDefaultResultSetName } from '../../interface-types';
-import { LocationStyle } from '../../bqrs-types';
+import { getDefaultResultSetName } from '../../pure/interface-types';
 import { DatabaseItem } from '../../databases';
 
 describe('interface-utils', () => {
@@ -73,20 +72,34 @@ describe('interface-utils', () => {
   describe('resolveWholeFileLocation', () => {
     it('should resolve a whole file location', () => {
       const mockDatabaseItem: DatabaseItem = ({
-        resolveSourceFile: sinon.stub().returns(vscode.Uri.parse('abc')),
+        resolveSourceFile: sinon.stub().returns(vscode.Uri.file('abc')),
       } as unknown) as DatabaseItem;
       expect(
         tryResolveLocation(
-          {
-            t: LocationStyle.WholeFile,
-            file: 'hucairz',
-          },
+          'file://hucairz:0:0:0:0',
           mockDatabaseItem
         )
       ).to.deep.equal(
         new vscode.Location(
-          vscode.Uri.parse('abc'),
+          vscode.Uri.file('abc'),
           new vscode.Range(0, 0, 0, 0)
+        )
+      );
+    });
+
+    it('should resolve a five-part location edge case', () => {
+      const mockDatabaseItem: DatabaseItem = ({
+        resolveSourceFile: sinon.stub().returns(vscode.Uri.file('abc')),
+      } as unknown) as DatabaseItem;
+      expect(
+        tryResolveLocation(
+          'file://hucairz:1:1:1:1',
+          mockDatabaseItem
+        )
+      ).to.deep.equal(
+        new vscode.Location(
+          vscode.Uri.file('abc'),
+          new vscode.Range(0, 0, 0, 1)
         )
       );
     });
@@ -99,12 +112,11 @@ describe('interface-utils', () => {
       expect(
         tryResolveLocation(
           {
-            t: LocationStyle.FivePart,
-            colStart: 1,
-            colEnd: 3,
-            lineStart: 4,
-            lineEnd: 5,
-            file: 'hucairz',
+            startColumn: 1,
+            endColumn: 3,
+            startLine: 4,
+            endLine: 5,
+            uri: 'hucairz',
           },
           mockDatabaseItem
         )
@@ -119,7 +131,7 @@ describe('interface-utils', () => {
       );
     });
 
-    it('should resolve a string location for whole file', () => {
+    it('should resolve a five-part location with an empty path', () => {
       const mockDatabaseItem: DatabaseItem = ({
         resolveSourceFile: sinon.stub().returns(vscode.Uri.parse('abc')),
       } as unknown) as DatabaseItem;
@@ -127,9 +139,25 @@ describe('interface-utils', () => {
       expect(
         tryResolveLocation(
           {
-            t: LocationStyle.String,
-            loc: 'file://hucairz:0:0:0:0'
+            startColumn: 1,
+            endColumn: 3,
+            startLine: 4,
+            endLine: 5,
+            uri: '',
           },
+          mockDatabaseItem
+        )
+      ).to.be.undefined;
+    });
+
+    it('should resolve a string location for whole file', () => {
+      const mockDatabaseItem: DatabaseItem = ({
+        resolveSourceFile: sinon.stub().returns(vscode.Uri.parse('abc')),
+      } as unknown) as DatabaseItem;
+
+      expect(
+        tryResolveLocation(
+          'file://hucairz:0:0:0:0',
           mockDatabaseItem
         )
       ).to.deep.equal(
@@ -150,10 +178,7 @@ describe('interface-utils', () => {
 
       expect(
         tryResolveLocation(
-          {
-            t: LocationStyle.String,
-            loc: 'file://hucairz:5:4:3:2'
-          },
+          'file://hucairz:5:4:3:2',
           mockDatabaseItem
         )
       ).to.deep.equal(
@@ -174,10 +199,7 @@ describe('interface-utils', () => {
 
       expect(
         tryResolveLocation(
-          {
-            t: LocationStyle.String,
-            loc: 'file://hucairz:x:y:z:a'
-          },
+          'file://hucairz:x:y:z:a',
           mockDatabaseItem
         )
       ).to.be.undefined;

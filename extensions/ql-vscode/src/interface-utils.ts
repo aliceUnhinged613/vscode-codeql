@@ -13,18 +13,18 @@ import {
   ThemeColor,
 } from 'vscode';
 import {
-  FivePartLocation,
-  LocationStyle,
-  LocationValue,
-  WholeFileLocation,
-  ResolvableLocationValue,
-} from './bqrs-types';
-import {
   tryGetResolvableLocation,
-} from './bqrs-utils';
+  isLineColumnLoc
+} from './pure/bqrs-utils';
 import { DatabaseItem, DatabaseManager } from './databases';
-import { ViewSourceFileMsg } from './interface-types';
+import { ViewSourceFileMsg } from './pure/interface-types';
 import { Logger } from './logging';
+import {
+  LineColumnLocation,
+  WholeFileLocation,
+  UrlValue,
+  ResolvableLocationValue
+} from './pure/bqrs-cli-types';
 
 /**
  * This module contains functions and types that are sharedd between
@@ -61,19 +61,19 @@ export function fileUriToWebviewUri(
  * @param databaseItem Database in which to resolve the file location.
  */
 function resolveFivePartLocation(
-  loc: FivePartLocation,
+  loc: LineColumnLocation,
   databaseItem: DatabaseItem
 ): Location {
   // `Range` is a half-open interval, and is zero-based. CodeQL locations are closed intervals, and
   // are one-based. Adjust accordingly.
   const range = new Range(
-    Math.max(0, loc.lineStart - 1),
-    Math.max(0, loc.colStart - 1),
-    Math.max(0, loc.lineEnd - 1),
-    Math.max(0, loc.colEnd)
+    Math.max(0, loc.startLine - 1),
+    Math.max(0, loc.startColumn - 1),
+    Math.max(0, loc.endLine - 1),
+    Math.max(0, loc.endColumn)
   );
 
-  return new Location(databaseItem.resolveSourceFile(loc.file), range);
+  return new Location(databaseItem.resolveSourceFile(loc.uri), range);
 }
 
 /**
@@ -87,7 +87,7 @@ function resolveWholeFileLocation(
 ): Location {
   // A location corresponding to the start of the file.
   const range = new Range(0, 0, 0, 0);
-  return new Location(databaseItem.resolveSourceFile(loc.file), range);
+  return new Location(databaseItem.resolveSourceFile(loc.uri), range);
 }
 
 /**
@@ -97,20 +97,16 @@ function resolveWholeFileLocation(
  * @param databaseItem Database in which to resolve the file location.
  */
 export function tryResolveLocation(
-  loc: LocationValue | undefined,
+  loc: UrlValue | undefined,
   databaseItem: DatabaseItem
 ): Location | undefined {
   const resolvableLoc = tryGetResolvableLocation(loc);
-  if (resolvableLoc === undefined) {
-    return undefined;
-  }
-  switch (resolvableLoc.t) {
-    case LocationStyle.FivePart:
-      return resolveFivePartLocation(resolvableLoc, databaseItem);
-    case LocationStyle.WholeFile:
-      return resolveWholeFileLocation(resolvableLoc, databaseItem);
-    default:
-      return undefined;
+  if (!resolvableLoc || typeof resolvableLoc === 'string') {
+    return;
+  } else if (isLineColumnLoc(resolvableLoc)) {
+    return resolveFivePartLocation(resolvableLoc, databaseItem);
+  } else {
+    return resolveWholeFileLocation(resolvableLoc, databaseItem);
   }
 }
 
@@ -160,33 +156,41 @@ export async function showResolvableLocation(
 }
 
 export async function showLocation(location?: Location) {
-  if (location) {
-    const doc = await workspace.openTextDocument(location.uri);
-    const editorsWithDoc = Window.visibleTextEditors.filter(
-      (e) => e.document === doc
-    );
-    const editor =
-      editorsWithDoc.length > 0
-        ? editorsWithDoc[0]
-        : await Window.showTextDocument(doc, ViewColumn.One);
-    const range = location.range;
-    // When highlighting the range, vscode's occurrence-match and bracket-match highlighting will
-    // trigger based on where we place the cursor/selection, and will compete for the user's attention.
-    // For reference:
-    // - Occurences are highlighted when the cursor is next to or inside a word or a whole word is selected.
-    // - Brackets are highlighted when the cursor is next to a bracket and there is an empty selection.
-    // - Multi-line selections explicitly highlight line-break characters, but multi-line decorators do not.
-    //
-    // For single-line ranges, select the whole range, mainly to disable bracket highlighting.
-    // For multi-line ranges, place the cursor at the beginning to avoid visual artifacts from selected line-breaks.
-    // Multi-line ranges are usually large enough to overshadow the noise from bracket highlighting.
-    const selectionEnd =
-      range.start.line === range.end.line ? range.end : range.start;
-    editor.selection = new Selection(range.start, selectionEnd);
-    editor.revealRange(range, TextEditorRevealType.InCenter);
-    editor.setDecorations(shownLocationDecoration, [range]);
-    editor.setDecorations(shownLocationLineDecoration, [range]);
+  if (!location) {
+    return;
   }
+
+  const doc = await workspace.openTextDocument(location.uri);
+  const editorsWithDoc = Window.visibleTextEditors.filter(
+    (e) => e.document === doc
+  );
+  const editor =
+    editorsWithDoc.length > 0
+      ? editorsWithDoc[0]
+      : await Window.showTextDocument(
+        doc, {
+        // avoid preview mode so editor is sticky and will be added to navigation and search histories.
+        preview: false,
+        viewColumn: ViewColumn.One,
+      });
+
+  const range = location.range;
+  // When highlighting the range, vscode's occurrence-match and bracket-match highlighting will
+  // trigger based on where we place the cursor/selection, and will compete for the user's attention.
+  // For reference:
+  // - Occurences are highlighted when the cursor is next to or inside a word or a whole word is selected.
+  // - Brackets are highlighted when the cursor is next to a bracket and there is an empty selection.
+  // - Multi-line selections explicitly highlight line-break characters, but multi-line decorators do not.
+  //
+  // For single-line ranges, select the whole range, mainly to disable bracket highlighting.
+  // For multi-line ranges, place the cursor at the beginning to avoid visual artifacts from selected line-breaks.
+  // Multi-line ranges are usually large enough to overshadow the noise from bracket highlighting.
+  const selectionEnd =
+    range.start.line === range.end.line ? range.end : range.start;
+  editor.selection = new Selection(range.start, selectionEnd);
+  editor.revealRange(range, TextEditorRevealType.InCenter);
+  editor.setDecorations(shownLocationDecoration, [range]);
+  editor.setDecorations(shownLocationLineDecoration, [range]);
 }
 
 const findMatchBackground = new ThemeColor('editor.findMatchBackground');
@@ -220,14 +224,14 @@ export async function jumpToLocation(
     } catch (e) {
       if (e instanceof Error) {
         if (e.message.match(/File not found/)) {
-          Window.showErrorMessage(
+          void Window.showErrorMessage(
             'Original file of this result is not in the database\'s source archive.'
           );
         } else {
-          logger.log(`Unable to handleMsgFromView: ${e.message}`);
+          void logger.log(`Unable to handleMsgFromView: ${e.message}`);
         }
       } else {
-        logger.log(`Unable to handleMsgFromView: ${e}`);
+        void logger.log(`Unable to handleMsgFromView: ${e}`);
       }
     }
   }

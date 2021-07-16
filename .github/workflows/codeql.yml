@@ -2,21 +2,30 @@ name: "Code Scanning - CodeQL"
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '21 17 * * 0'
 
 jobs:
   codeql:
-    strategy:
-      fail-fast: false
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v1
+        uses: github/codeql-action/init@main
+        with:
+            languages: javascript
+            config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v1
+        uses: github/codeql-action/analyze@main

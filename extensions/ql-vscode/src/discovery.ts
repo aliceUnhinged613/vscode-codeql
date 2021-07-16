@@ -1,5 +1,5 @@
-import { DisposableObject } from './vscode-utils/disposable-object';
-import { showAndLogErrorMessage } from './helpers';
+import { DisposableObject } from './pure/disposable-object';
+import { logger } from './logging';
 
 /**
  * Base class for "discovery" operations, which scan the file system to find specific kinds of
@@ -59,23 +59,23 @@ export abstract class Discovery<T> extends DisposableObject {
         this.discoveryInProgress = false;
         this.update(results);
       }
-    });
+    })
 
-    discoveryPromise.catch(err => {
-      showAndLogErrorMessage(`${this.name} failed. Reason: ${err.message}`);
-    });
+      .catch(err => {
+        void logger.log(`${this.name} failed. Reason: ${err.message}`);
+      })
 
-    discoveryPromise.finally(() => {
-      if (this.retry) {
-        // Another refresh request came in while we were still running a previous discovery
-        // operation. Since the discovery results we just computed are now stale, we'll launch
-        // another discovery operation instead of updating.
-        // Note that by doing this inside of `finally`, we will relaunch discovery even if the
-        // initial discovery operation failed.
-        this.retry = false;
-        this.launchDiscovery();
-      }
-    });
+      .finally(() => {
+        if (this.retry) {
+          // Another refresh request came in while we were still running a previous discovery
+          // operation. Since the discovery results we just computed are now stale, we'll launch
+          // another discovery operation instead of updating.
+          // Note that by doing this inside of `finally`, we will relaunch discovery even if the
+          // initial discovery operation failed.
+          this.retry = false;
+          this.launchDiscovery();
+        }
+      });
   }
 
   /**

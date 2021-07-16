@@ -16,19 +16,24 @@ import {
 chai.use(chaiAsPromised);
 const expect = chai.expect;
 
-describe('databaseFetcher', () => {
+describe('databaseFetcher', function() {
+  // These tests make API calls and may need extra time to complete.
+  this.timeout(10000);
+
   describe('convertToDatabaseUrl', () => {
+    let sandbox: sinon.SinonSandbox;
     let quickPickSpy: sinon.SinonStub;
     beforeEach(() => {
-      quickPickSpy = sinon.stub(window, 'showQuickPick');
+      sandbox = sinon.createSandbox();
+      quickPickSpy = sandbox.stub(window, 'showQuickPick');
     });
 
     afterEach(() => {
-      (window.showQuickPick as sinon.SinonStub).restore();
+      sandbox.restore();
     });
 
     it('should convert a project url to a database url', async () => {
-      quickPickSpy.returns('javascript' as any);
+      quickPickSpy.resolves('javascript');
       const lgtmUrl = 'https://lgtm.com/projects/g/github/codeql';
       const dbUrl = await convertToDatabaseUrl(lgtmUrl);
 
@@ -40,7 +45,7 @@ describe('databaseFetcher', () => {
     });
 
     it('should convert a project url to a database url with extra path segments', async () => {
-      quickPickSpy.returns('python' as any);
+      quickPickSpy.resolves('python');
       const lgtmUrl =
         'https://lgtm.com/projects/g/github/codeql/subpage/subpage2?query=xxx';
       const dbUrl = await convertToDatabaseUrl(lgtmUrl);
@@ -50,10 +55,21 @@ describe('databaseFetcher', () => {
       );
     });
 
-    it('should fail on a nonexistant prohect', async () => {
-      quickPickSpy.returns('javascript' as any);
+    it('should convert a raw slug to a database url with extra path segments', async () => {
+      quickPickSpy.resolves('python');
+      const lgtmUrl =
+        'g/github/codeql';
+      const dbUrl = await convertToDatabaseUrl(lgtmUrl);
+
+      expect(dbUrl).to.equal(
+        'https://lgtm.com/api/v1.0/snapshots/1506465042581/python'
+      );
+    });
+
+    it('should fail on a nonexistent project', async () => {
+      quickPickSpy.resolves('javascript');
       const lgtmUrl = 'https://lgtm.com/projects/g/github/hucairz';
-      expect(convertToDatabaseUrl(lgtmUrl)).to.rejectedWith(/Invalid LGTM URL/);
+      await expect(convertToDatabaseUrl(lgtmUrl)).to.rejectedWith(/Invalid LGTM URL/);
     });
   });
 
@@ -65,6 +81,10 @@ describe('databaseFetcher', () => {
       expect(looksLikeLgtmUrl('https://ww.lgtm.com/projects/g/github/codeql'))
         .to.be.false;
       expect(looksLikeLgtmUrl('https://ww.lgtm.com/projects/g/github')).to.be
+        .false;
+      expect(looksLikeLgtmUrl('g/github')).to.be
+        .false;
+      expect(looksLikeLgtmUrl('ggg/github/myproj')).to.be
         .false;
     });
 
@@ -81,6 +101,10 @@ describe('databaseFetcher', () => {
           'https://lgtm.com/projects/g/github/codeql/sub/pages?query=string'
         )
       ).to.be.true;
+      expect(looksLikeLgtmUrl('g/github/myproj')).to.be
+        .true;
+      expect(looksLikeLgtmUrl('git/github/myproj')).to.be
+        .true;
     });
   });
 

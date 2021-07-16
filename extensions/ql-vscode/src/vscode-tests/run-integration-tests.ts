@@ -1,16 +1,17 @@
 import * as path from 'path';
 import * as os from 'os';
-import { runTests } from 'vscode-test';
+import * as cp from 'child_process';
+import {
+  runTests,
+  downloadAndUnzipVSCode,
+  resolveCliPathFromVSCodeExecutablePath
+} from 'vscode-test';
+import { assertNever } from '../pure/helpers-pure';
 
-// A subset of the fields in TestOptions from vscode-test, which we
-// would simply use instead, but for the fact that it doesn't export
-// it.
-type Suite = {
-  extensionDevelopmentPath: string;
-  extensionTestsPath: string;
-  launchArgs: string[];
-  version?: string;
-};
+// For some reason, `TestOptions` is not exported directly from `vscode-test`,
+// but we can be tricky and import directly from the out file.
+import { TestOptions } from 'vscode-test/out/runTest';
+
 
 // Which version of vscode to test against. Can set to 'stable' or
 // 'insiders' or an explicit version number. See runTest.d.ts in
@@ -22,11 +23,21 @@ type Suite = {
 // testing against old versions if necessary.
 const VSCODE_VERSION = 'stable';
 
+// List if test dirs
+//   - no-workspace - Tests with no workspace selected upon launch.
+//   - minimal-workspace - Tests with a simple workspace selected upon launch.
+//   - cli-integration - Tests that require a cli to invoke actual commands
+enum TestDir {
+  NoWorksspace = 'no-workspace',
+  MinimalWorksspace = 'minimal-workspace',
+  CliIntegration = 'cli-integration'
+}
+
 /**
  * Run an integration test suite `suite`, retrying if it segfaults, at
  * most `tries` times.
  */
-async function runTestsWithRetryOnSegfault(suite: Suite, tries: number): Promise<void> {
+async function runTestsWithRetryOnSegfault(suite: TestOptions, tries: number): Promise<void> {
   for (let t = 0; t < tries; t++) {
     try {
       // Download and unzip VS Code if necessary, and run the integration test suite.
@@ -58,34 +69,35 @@ async function runTestsWithRetryOnSegfault(suite: Suite, tries: number): Promise
  */
 async function main() {
   try {
-    // The folder containing the Extension Manifest package.json
-    // Passed to `--extensionDevelopmentPath`.
     const extensionDevelopmentPath = path.resolve(__dirname, '../..');
+    const vscodeExecutablePath = await downloadAndUnzipVSCode(VSCODE_VERSION);
 
-    // List of integration test suites.
-    // The path to the extension test runner script is passed to --extensionTestsPath.
-    const integrationTestSuites: Suite[] = [
-      // Tests with no workspace selected upon launch.
-      {
-        version: VSCODE_VERSION,
-        extensionDevelopmentPath: extensionDevelopmentPath,
-        extensionTestsPath: path.resolve(__dirname, 'no-workspace', 'index'),
-        launchArgs: ['--disable-extensions'],
-      },
-      // Tests with a simple workspace selected upon launch.
-      {
-        version: VSCODE_VERSION,
-        extensionDevelopmentPath: extensionDevelopmentPath,
-        extensionTestsPath: path.resolve(__dirname, 'minimal-workspace', 'index'),
-        launchArgs: [
-          path.resolve(__dirname, '../../test/data'),
-          '--disable-extensions',
-        ]
-      }
-    ];
 
-    for (const integrationTestSuite of integrationTestSuites) {
-      await runTestsWithRetryOnSegfault(integrationTestSuite, 3);
+    // Which tests to run. Use a comma-separated list of directories.
+    const testDirsString = process.argv[2];
+    const dirs = testDirsString.split(',').map(dir => dir.trim().toLocaleLowerCase());
+
+    if (dirs.includes(TestDir.CliIntegration)) {
+      console.log('Installing required extensions');
+      const cliPath = resolveCliPathFromVSCodeExecutablePath(vscodeExecutablePath);
+      cp.spawnSync(cliPath, ['--install-extension', 'hbenl.vscode-test-explorer'], {
+        encoding: 'utf-8',
+        stdio: 'inherit'
+      });
+    }
+
+    console.log(`Running integration tests in these directories: ${dirs}`);
+    for (const dir of dirs) {
+      const launchArgs = getLaunchArgs(dir as TestDir);
+      console.log(`Next integration test dir: ${dir}`);
+      console.log(`Launch args: ${launchArgs}`);
+      await runTestsWithRetryOnSegfault({
+        version: VSCODE_VERSION,
+        vscodeExecutablePath,
+        extensionDevelopmentPath,
+        extensionTestsPath: path.resolve(__dirname, dir, 'index'),
+        launchArgs
+      }, 3);
     }
   } catch (err) {
     console.error(`Unexpected exception while running tests: ${err}`);
@@ -93,4 +105,42 @@ async function main() {
   }
 }
 
-main();
+void main();
+
+
+function getLaunchArgs(dir: TestDir) {
+  switch (dir) {
+    case TestDir.NoWorksspace:
+      return [
+        '--disable-extensions',
+        '--disable-gpu'
+      ];
+
+    case TestDir.MinimalWorksspace:
+      return [
+        '--disable-extensions',
+        '--disable-gpu',
+        path.resolve(__dirname, '../../test/data')
+      ];
+
+    case TestDir.CliIntegration:
+      // CLI integration tests requires a multi-root workspace so that the data and the QL sources are accessible.
+      return [
+        '--disable-gpu',
+        path.resolve(__dirname, '../../test/data'),
+
+        // explicitly disable extensions that are known to interfere with the CLI integration tests
+        '--disable-extension',
+        'eamodio.gitlens',
+        '--disable-extension',
+        'github.codespaces',
+        '--disable-extension',
+        'github.copilot',
+        process.env.TEST_CODEQL_PATH!
+      ];
+
+    default:
+      assertNever(dir);
+  }
+  return undefined;
+}

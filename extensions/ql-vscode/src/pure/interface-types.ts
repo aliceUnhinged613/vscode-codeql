@@ -1,10 +1,5 @@
 import * as sarif from 'sarif';
-import {
-  ResolvableLocationValue,
-  ColumnSchema,
-  ResultSetSchema,
-} from './bqrs-types';
-import { ResultRow, ParsedResultSets, RawResultSet } from './adapt';
+import { RawResultSet, ResultRow, ResultSetSchema, Column, ResolvableLocationValue } from './bqrs-cli-types';
 
 /**
  * This module contains types and code that are shared between
@@ -28,16 +23,6 @@ export type ResultSet = RawTableResultSet | PathTableResultSet;
  */
 export const RAW_RESULTS_LIMIT = 10000;
 
-/**
- * Show this many rows in a raw result table at a time.
- */
-export const RAW_RESULTS_PAGE_SIZE = 100;
-
-/**
- * Show this many rows in an interpreted results table at a time.
- */
-export const INTERPRETED_RESULTS_PAGE_SIZE = 100;
-
 export interface DatabaseInfo {
   name: string;
   databaseUri: string;
@@ -49,6 +34,7 @@ export interface QueryMetadata {
   description?: string;
   id?: string;
   kind?: string;
+  scored?: string;
 }
 
 export interface PreviousExecution {
@@ -91,6 +77,10 @@ export interface ResultsUpdatingMsg {
   t: 'resultsUpdating';
 }
 
+/**
+ * Message to set the initial state of the results view with a new
+ * query.
+ */
 export interface SetStateMsg {
   t: 'setState';
   resultsPath: string;
@@ -99,6 +89,8 @@ export interface SetStateMsg {
   interpretation: undefined | Interpretation;
   database: DatabaseInfo;
   metadata?: QueryMetadata;
+  queryName: string;
+  queryPath: string;
   /**
    * Whether to keep displaying the old results while rendering the new results.
    *
@@ -114,6 +106,10 @@ export interface SetStateMsg {
   parsedResultSets: ParsedResultSets;
 }
 
+/**
+ * Message indicating that the results view should display interpreted
+ * results.
+ */
 export interface ShowInterpretedPageMsg {
   t: 'showInterpretedPage';
   interpretation: Interpretation;
@@ -121,7 +117,10 @@ export interface ShowInterpretedPageMsg {
   metadata?: QueryMetadata;
   pageNumber: number;
   numPages: number;
+  pageSize: number;
   resultSetNames: string[];
+  queryName: string;
+  queryPath: string;
 }
 
 /** Advance to the next or previous path no in the path viewer */
@@ -132,26 +131,59 @@ export interface NavigatePathMsg {
   direction: number;
 }
 
+/**
+ * A message indicating that the results view should untoggle the
+ * "Show results in Problems view" checkbox.
+ */
+export interface UntoggleShowProblemsMsg {
+  t: 'untoggleShowProblems';
+}
+
+/**
+ * A message sent into the results view.
+ */
 export type IntoResultsViewMsg =
   | ResultsUpdatingMsg
   | SetStateMsg
   | ShowInterpretedPageMsg
-  | NavigatePathMsg;
+  | NavigatePathMsg
+  | UntoggleShowProblemsMsg;
 
+/**
+ * A message sent from the results view.
+ */
 export type FromResultsViewMsg =
   | ViewSourceFileMsg
   | ToggleDiagnostics
   | ChangeRawResultsSortMsg
   | ChangeInterpretedResultsSortMsg
   | ResultViewLoaded
-  | ChangePage;
+  | ChangePage
+  | OpenFileMsg;
 
+/**
+ * Message from the results view to open a database source
+ * file at the provided location.
+ */
 export interface ViewSourceFileMsg {
   t: 'viewSourceFile';
   loc: ResolvableLocationValue;
   databaseUri: string;
 }
 
+/**
+ * Message from the results view to open a file in an editor.
+ */
+export interface OpenFileMsg {
+  t: 'openFile';
+  /* Full path to the file to open. */
+  filePath: string;
+}
+
+/**
+ * Message from the results view to toggle the display of
+ * query diagnostics.
+ */
 interface ToggleDiagnostics {
   t: 'toggleDiagnostics';
   databaseUri: string;
@@ -161,10 +193,18 @@ interface ToggleDiagnostics {
   kind?: string;
 }
 
+/**
+ * Message from the results view to signal that loading the results
+ * is complete.
+ */
 interface ResultViewLoaded {
   t: 'resultViewLoaded';
 }
 
+/**
+ * Message from the results view to signal a request to change the
+ * page.
+ */
 interface ChangePage {
   t: 'changePage';
   pageNumber: number; // 0-indexed, displayed to the user as 1-indexed
@@ -188,6 +228,9 @@ export interface InterpretedResultsSortState {
   sortDirection: SortDirection;
 }
 
+/**
+ * Message from the results view to request a sorting change.
+ */
 interface ChangeRawResultsSortMsg {
   t: 'changeSort';
   resultSetName: string;
@@ -198,6 +241,9 @@ interface ChangeRawResultsSortMsg {
   sortState?: RawResultsSortState;
 }
 
+/**
+ * Message from the results view to request a sorting change in interpreted results.
+ */
 interface ChangeInterpretedResultsSortMsg {
   t: 'changeInterpretedSort';
   /**
@@ -207,21 +253,33 @@ interface ChangeInterpretedResultsSortMsg {
   sortState?: InterpretedResultsSortState;
 }
 
+/**
+ * Message from the compare view to the extension.
+ */
 export type FromCompareViewMessage =
   | CompareViewLoadedMessage
   | ChangeCompareMessage
   | ViewSourceFileMsg
   | OpenQueryMessage;
 
+/**
+ * Message from the compare view to signal the completion of loading results.
+ */
 interface CompareViewLoadedMessage {
   t: 'compareViewLoaded';
 }
 
+/**
+ * Message from the compare view to request opening a query.
+ */
 export interface OpenQueryMessage {
   readonly t: 'openQuery';
   readonly kind: 'from' | 'to';
 }
 
+/**
+ * Message from the compare view to request changing the result set to compare.
+ */
 interface ChangeCompareMessage {
   t: 'changeCompare';
   newResultSetName: string;
@@ -229,6 +287,9 @@ interface ChangeCompareMessage {
 
 export type ToCompareViewMessage = SetComparisonsMessage;
 
+/**
+ * Message to the compare view that specifies the query results to compare.
+ */
 export interface SetComparisonsMessage {
   readonly t: 'setComparisons';
   readonly stats: {
@@ -243,7 +304,7 @@ export interface SetComparisonsMessage {
       time: string;
     };
   };
-  readonly columns: readonly ColumnSchema[];
+  readonly columns: readonly Column[];
   readonly commonResultSetNames: string[];
   readonly currentResultSetName: string;
   readonly rows: QueryCompareResult | undefined;
@@ -292,4 +353,14 @@ export function getDefaultResultSetName(
     SELECT_TABLE_NAME,
     resultSetNames[0],
   ].filter((resultSetName) => resultSetNames.includes(resultSetName))[0];
+}
+
+export interface ParsedResultSets {
+  pageNumber: number;
+  pageSize: number;
+  numPages: number;
+  numInterpretedPages: number;
+  selectedTable?: string; // when undefined, means 'show default table'
+  resultSetNames: string[];
+  resultSet: ResultSet;
 }

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as Rdom from 'react-dom';
-import { assertNever } from '../helpers-pure';
+import { assertNever } from '../pure/helpers-pure';
 import {
   DatabaseInfo,
   Interpretation,
@@ -11,13 +11,11 @@ import {
   QueryMetadata,
   ResultsPaths,
   ALERTS_TABLE_NAME,
-} from '../interface-types';
+  ParsedResultSets,
+} from '../pure/interface-types';
 import { EventHandlers as EventHandlerList } from './event-handler-list';
 import { ResultTables } from './result-tables';
-import {
-  ParsedResultSets,
-} from '../adapt';
-import { ResultSet } from '../interface-types';
+import { ResultSet } from '../pure/interface-types';
 import { vscode } from './vscode-api';
 
 /**
@@ -39,6 +37,8 @@ interface ResultsInfo {
    */
   shouldKeepOldResultsWhileRendering: boolean;
   metadata?: QueryMetadata;
+  queryName: string;
+  queryPath: string;
 }
 
 interface Results {
@@ -71,7 +71,7 @@ export const onNavigation = new EventHandlerList<NavigationEvent>();
 /**
  * A minimal state container for displaying results.
  */
-class App extends React.Component<{}, ResultsViewState> {
+class App extends React.Component<Record<string, never>, ResultsViewState> {
   constructor(props: any) {
     super(props);
     this.state = {
@@ -98,22 +98,29 @@ class App extends React.Component<{}, ResultsViewState> {
           shouldKeepOldResultsWhileRendering:
             msg.shouldKeepOldResultsWhileRendering,
           metadata: msg.metadata,
+          queryName: msg.queryName,
+          queryPath: msg.queryPath,
         });
 
-        this.loadResults();
+        void this.loadResults();
         break;
       case 'showInterpretedPage':
         this.updateStateWithNewResultsInfo({
           resultsPath: '', // FIXME: Not used for interpreted, refactor so this is not needed
           parsedResultSets: {
             numPages: msg.numPages,
+            pageSize: msg.pageSize,
             numInterpretedPages: msg.numPages,
             resultSetNames: msg.resultSetNames,
             pageNumber: msg.pageNumber,
             resultSet: {
               t: 'SarifResultSet',
               name: ALERTS_TABLE_NAME,
-              schema: { name: ALERTS_TABLE_NAME, version: 0, columns: [], tupleCount: 1 },
+              schema: {
+                name: ALERTS_TABLE_NAME,
+                rows: 1,
+                columns: []
+              },
               ...msg.interpretation,
             },
             selectedTable: ALERTS_TABLE_NAME,
@@ -124,8 +131,10 @@ class App extends React.Component<{}, ResultsViewState> {
           interpretation: msg.interpretation,
           shouldKeepOldResultsWhileRendering: true,
           metadata: msg.metadata,
+          queryName: msg.queryName,
+          queryPath: msg.queryPath,
         });
-        this.loadResults();
+        void this.loadResults();
         break;
       case 'resultsUpdating':
         this.setState({
@@ -135,6 +144,11 @@ class App extends React.Component<{}, ResultsViewState> {
       case 'navigatePath':
         onNavigation.fire(msg);
         break;
+
+      case 'untoggleShowProblems':
+        // noop
+        break;
+
       default:
         assertNever(msg);
     }
@@ -170,11 +184,17 @@ class App extends React.Component<{}, ResultsViewState> {
     });
   }
 
-  private async getResultSets(
+  private getResultSets(
     resultsInfo: ResultsInfo
-  ): Promise<readonly ResultSet[]> {
+  ): readonly ResultSet[] {
     const parsedResultSets = resultsInfo.parsedResultSets;
-    return [{ t: 'RawResultSet', ...parsedResultSets.resultSet }];
+    const resultSet = parsedResultSets.resultSet;
+    if (!resultSet.t) {
+      throw new Error(
+        'Missing result set type. Should be either "SarifResultSet" or "RawResultSet".'
+      );
+    }
+    return [resultSet];
   }
 
   private async loadResults(): Promise<void> {
@@ -186,7 +206,7 @@ class App extends React.Component<{}, ResultsViewState> {
     let results: Results | null = null;
     let statusText = '';
     try {
-      const resultSets = await this.getResultSets(resultsInfo);
+      const resultSets = this.getResultSets(resultsInfo);
       results = {
         resultSets,
         database: resultsInfo.database,
@@ -266,6 +286,8 @@ class App extends React.Component<{}, ResultsViewState> {
             this.state.isExpectingResultsUpdate ||
             this.state.nextResultsInfo !== null
           }
+          queryName={displayedResults.resultsInfo.queryName}
+          queryPath={displayedResults.resultsInfo.queryPath}
         />
       );
     } else {
@@ -274,11 +296,7 @@ class App extends React.Component<{}, ResultsViewState> {
   }
 
   componentDidMount(): void {
-    this.vscodeMessageHandler = (evt) =>
-      evt.origin === window.origin
-        ? this.handleMessage(evt.data as IntoResultsViewMsg)
-        : console.error(`Invalid event origin ${evt.origin}`);
-
+    this.vscodeMessageHandler = this.vscodeMessageHandler.bind(this);
     window.addEventListener('message', this.vscodeMessageHandler);
   }
 
@@ -288,9 +306,13 @@ class App extends React.Component<{}, ResultsViewState> {
     }
   }
 
-  private vscodeMessageHandler:
-    | ((ev: MessageEvent) => void)
-    | undefined = undefined;
+  private vscodeMessageHandler(evt: MessageEvent) {
+    // sanitize origin
+    const origin = evt.origin.replace(/\n|\r/g, '');
+    evt.origin === window.origin
+      ? this.handleMessage(evt.data as IntoResultsViewMsg)
+      : console.error(`Invalid event origin ${origin}`);
+  }
 }
 
 Rdom.render(<App />, document.getElementById('root'));

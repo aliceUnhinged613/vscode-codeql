@@ -1,10 +1,14 @@
 import * as vscode from 'vscode';
-import { DatabaseItem } from './databases';
-import * as helpers from './helpers';
+import { getOnDiskWorkspaceFolders, showAndLogErrorMessage } from './helpers';
+import { ProgressCallback, UserCancellationException } from './commandRunner';
 import { logger } from './logging';
-import * as messages from './messages';
+import * as messages from './pure/messages';
 import * as qsClient from './queryserver-client';
-import { upgradesTmpDir, UserCancellationException } from './run-queries';
+import { upgradesTmpDir } from './run-queries';
+import * as tmp from 'tmp-promise';
+import * as path from 'path';
+import * as semver from 'semver';
+import { DatabaseItem } from './databases';
 
 /**
  * Maximum number of lines to include from database upgrade message,
@@ -14,68 +18,99 @@ import { upgradesTmpDir, UserCancellationException } from './run-queries';
 const MAX_UPGRADE_MESSAGE_LINES = 10;
 
 /**
- * Checks whether the given database can be upgraded to the given target DB scheme,
- * and whether the user wants to proceed with the upgrade.
+ * Check that we support non-destructive upgrades.
+ *
+ * This requires 3 features. The ability to compile an upgrade sequence; The ability to
+ * run a non-destructive upgrades as a query; the ability to specify a target when
+ * resolving upgrades. We check for a version of codeql that has all three features.
+ */
+export async function hasNondestructiveUpgradeCapabilities(qs: qsClient.QueryServerClient): Promise<boolean> {
+  return semver.gte(await qs.cliServer.getVersion(), '2.4.2');
+}
+
+
+/**
+ * Compile a database upgrade sequence.
+ * Callers must check that this is valid with the current queryserver first.
+ */
+export async function compileDatabaseUpgradeSequence(
+  qs: qsClient.QueryServerClient,
+  db: DatabaseItem,
+  resolvedSequence: string[],
+  currentUpgradeTmp: tmp.DirectoryResult,
+  progress: ProgressCallback,
+  token: vscode.CancellationToken
+): Promise<messages.CompileUpgradeSequenceResult> {
+  if (db.contents === undefined || db.contents.dbSchemeUri === undefined) {
+    throw new Error('Database is invalid, and cannot be upgraded.');
+  }
+  if (!await hasNondestructiveUpgradeCapabilities(qs)) {
+    throw new Error('The version of codeql is too old to run non-destructive upgrades.');
+  }
+  // If possible just compile the upgrade sequence
+  return await qs.sendRequest(messages.compileUpgradeSequence, {
+    upgradeTempDir: currentUpgradeTmp.path,
+    upgradePaths: resolvedSequence
+  }, token, progress);
+}
+
+async function compileDatabaseUpgrade(
+  qs: qsClient.QueryServerClient,
+  db: DatabaseItem,
+  targetDbScheme: string,
+  resolvedSequence: string[],
+  currentUpgradeTmp: tmp.DirectoryResult,
+  progress: ProgressCallback,
+  token: vscode.CancellationToken
+): Promise<messages.CompileUpgradeResult> {
+  if (!db.contents?.dbSchemeUri) {
+    throw new Error('Database is invalid, and cannot be upgraded.');
+  }
+  // We have the upgrades we want but compileUpgrade
+  // requires searching for them.  So we use the parent directories of the upgrades
+  // as the upgrade path.
+  const parentDirs = resolvedSequence.map(dir => path.dirname(dir));
+  const uniqueParentDirs = new Set(parentDirs);
+  progress({
+    step: 1,
+    maxStep: 3,
+    message: 'Checking for database upgrades'
+  });
+  return qs.sendRequest(messages.compileUpgrade, {
+    upgrade: {
+      fromDbscheme: db.contents.dbSchemeUri.fsPath,
+      toDbscheme: targetDbScheme,
+      additionalUpgrades: Array.from(uniqueParentDirs)
+    },
+    upgradeTempDir: currentUpgradeTmp.path,
+    singleFileUpgrades: true,
+  }, token, progress);
+}
+
+/**
+ * Checks whether the user wants to proceed with the upgrade.
  * Reports errors to both the user and the console.
- * @returns the `UpgradeParams` needed to start the upgrade, if the upgrade is possible and was confirmed by the user, or `undefined` otherwise.
  */
 async function checkAndConfirmDatabaseUpgrade(
-  qs: qsClient.QueryServerClient, db: DatabaseItem, targetDbScheme: vscode.Uri, upgradesDirectories: vscode.Uri[]
-): Promise<messages.UpgradeParams | undefined> {
-  if (db.contents === undefined || db.contents.dbSchemeUri === undefined) {
-    helpers.showAndLogErrorMessage('Database is invalid, and cannot be upgraded.');
-    return;
-  }
-  const params: messages.UpgradeParams = {
-    fromDbscheme: db.contents.dbSchemeUri.fsPath,
-    toDbscheme: targetDbScheme.fsPath,
-    additionalUpgrades: upgradesDirectories.map(uri => uri.fsPath)
-  };
+  compiled: messages.CompiledUpgrades,
+  db: DatabaseItem,
+  quiet: boolean
+): Promise<void> {
 
-  let checkUpgradeResult: messages.CheckUpgradeResult;
-  try {
-    qs.logger.log('Checking database upgrade...');
-    checkUpgradeResult = await checkDatabaseUpgrade(qs, params);
-  }
-  catch (e) {
-    helpers.showAndLogErrorMessage(`Database cannot be upgraded: ${e}`);
-    return;
-  }
-  finally {
-    qs.logger.log('Done checking database upgrade.');
-  }
-
-  const checkedUpgrades = checkUpgradeResult.checkedUpgrades;
-  if (checkedUpgrades === undefined) {
-    const error = checkUpgradeResult.upgradeError || '[no error message available]';
-    await helpers.showAndLogErrorMessage(`Database cannot be upgraded: ${error}`);
-    return;
-  }
-
-  if (checkedUpgrades.scripts.length === 0) {
-    await helpers.showAndLogInformationMessage('Database is already up to date; nothing to do.');
-    return;
-  }
-
-  let curSha = checkedUpgrades.initialSha;
   let descriptionMessage = '';
-  for (const script of checkedUpgrades.scripts) {
+  const descriptions = getUpgradeDescriptions(compiled);
+  for (const script of descriptions) {
     descriptionMessage += `Would perform upgrade: ${script.description}\n`;
     descriptionMessage += `\t-> Compatibility: ${script.compatibility}\n`;
-    curSha = script.newSha;
   }
+  void logger.log(descriptionMessage);
 
-  const targetSha = checkedUpgrades.targetSha;
-  if (curSha != targetSha) {
-    // Newlines aren't rendered in notifications: https://github.com/microsoft/vscode/issues/48900
-    // A modal dialog would be rendered better, but is more intrusive.
-    await helpers.showAndLogErrorMessage(`Database cannot be upgraded to the target database scheme.
-    Can upgrade from ${checkedUpgrades.initialSha} (current) to ${curSha}, but cannot reach ${targetSha} (target).`);
-    // TODO: give a more informative message if we think the DB is ahead of the target DB scheme
+
+  // If the quiet flag is set, do the upgrade without a popup.
+  if (quiet) {
     return;
   }
 
-  logger.log(descriptionMessage);
   // Ask the user to confirm the upgrade.
 
   const showLogItem: vscode.MessageItem = { title: 'No, Show Changes', isCloseAffordance: true };
@@ -97,11 +132,22 @@ async function checkAndConfirmDatabaseUpgrade(
     logger.outputChannel.show();
   }
 
-  if (chosenItem === yesItem) {
-    return params;
-  }
-  else {
+  if (chosenItem !== yesItem) {
     throw new UserCancellationException('User cancelled the database upgrade.');
+  }
+}
+
+/**
+ * Get the descriptions from a compiled upgrade
+ */
+function getUpgradeDescriptions(compiled: messages.CompiledUpgrades): messages.UpgradeDescription[] {
+  // We use the presence of compiledUpgradeFile to check
+  // if it is multifile or not. We need to explicitly check undefined
+  // as the types claim the empty string is a valid value
+  if (compiled.compiledUpgradeFile === undefined) {
+    return compiled.scripts.map(script => script.description);
+  } else {
+    return compiled.descriptions;
   }
 }
 
@@ -111,74 +157,74 @@ async function checkAndConfirmDatabaseUpgrade(
  * First performs a dry-run and prompts the user to confirm the upgrade.
  * Reports errors during compilation and evaluation of upgrades to the user.
  */
-export async function upgradeDatabase(
-  qs: qsClient.QueryServerClient, db: DatabaseItem, targetDbScheme: vscode.Uri, upgradesDirectories: vscode.Uri[]
+export async function upgradeDatabaseExplicit(
+  qs: qsClient.QueryServerClient,
+  db: DatabaseItem,
+  progress: ProgressCallback,
+  token: vscode.CancellationToken,
 ): Promise<messages.RunUpgradeResult | undefined> {
-  const upgradeParams = await checkAndConfirmDatabaseUpgrade(qs, db, targetDbScheme, upgradesDirectories);
 
-  if (upgradeParams === undefined) {
-    return;
+  const searchPath: string[] = getOnDiskWorkspaceFolders();
+
+  if (!db?.contents?.dbSchemeUri) {
+    throw new Error('Database is invalid, and cannot be upgraded.');
   }
+  const upgradeInfo = await qs.cliServer.resolveUpgrades(
+    db.contents.dbSchemeUri.fsPath,
+    searchPath,
+    false
+  );
 
-  let compileUpgradeResult: messages.CompileUpgradeResult;
+  const { scripts, finalDbscheme } = upgradeInfo;
+
+  if (finalDbscheme === undefined) {
+    throw new Error('Could not determine target dbscheme to upgrade to.');
+  }
+  const currentUpgradeTmp = await tmp.dir({ dir: upgradesTmpDir.name, prefix: 'upgrade_', keep: false, unsafeCleanup: true });
   try {
-    compileUpgradeResult = await compileDatabaseUpgrade(qs, upgradeParams);
-  }
-  catch (e) {
-    helpers.showAndLogErrorMessage(`Compilation of database upgrades failed: ${e}`);
-    return;
-  }
-  finally {
-    qs.logger.log('Done compiling database upgrade.');
-  }
+    let compileUpgradeResult: messages.CompileUpgradeResult;
+    try {
+      compileUpgradeResult = await compileDatabaseUpgrade(qs, db, finalDbscheme, scripts, currentUpgradeTmp, progress, token);
+    }
+    catch (e) {
+      void showAndLogErrorMessage(`Compilation of database upgrades failed: ${e}`);
+      return;
+    }
+    finally {
+      void qs.logger.log('Done compiling database upgrade.');
+    }
 
-  if (compileUpgradeResult.compiledUpgrades === undefined) {
-    const error = compileUpgradeResult.error || '[no error message available]';
-    helpers.showAndLogErrorMessage(`Compilation of database upgrades failed: ${error}`);
-    return;
-  }
+    if (!compileUpgradeResult.compiledUpgrades) {
+      const error = compileUpgradeResult.error || '[no error message available]';
+      void showAndLogErrorMessage(`Compilation of database upgrades failed: ${error}`);
+      return;
+    }
 
-  try {
-    qs.logger.log('Running the following database upgrade:');
-    qs.logger.log(compileUpgradeResult.compiledUpgrades.scripts.map(s => s.description.description).join('\n'));
-    return await runDatabaseUpgrade(qs, db, compileUpgradeResult.compiledUpgrades);
-  }
-  catch (e) {
-    helpers.showAndLogErrorMessage(`Database upgrade failed: ${e}`);
-    return;
-  }
-  finally {
-    qs.logger.log('Done running database upgrade.');
-  }
-}
+    await checkAndConfirmDatabaseUpgrade(compileUpgradeResult.compiledUpgrades, db, qs.cliServer.quiet);
 
-async function checkDatabaseUpgrade(
-  qs: qsClient.QueryServerClient, upgradeParams: messages.UpgradeParams
-): Promise<messages.CheckUpgradeResult> {
-  return helpers.withProgress({
-    location: vscode.ProgressLocation.Notification,
-    title: 'Checking for database upgrades',
-    cancellable: true,
-  }, (progress, token) => qs.sendRequest(messages.checkUpgrade, upgradeParams, token, progress));
-}
+    try {
+      void qs.logger.log('Running the following database upgrade:');
 
-async function compileDatabaseUpgrade(
-  qs: qsClient.QueryServerClient, upgradeParams: messages.UpgradeParams
-): Promise<messages.CompileUpgradeResult> {
-  const params: messages.CompileUpgradeParams = {
-    upgrade: upgradeParams,
-    upgradeTempDir: upgradesTmpDir.name
-  };
-
-  return helpers.withProgress({
-    location: vscode.ProgressLocation.Notification,
-    title: 'Compiling database upgrades',
-    cancellable: true,
-  }, (progress, token) => qs.sendRequest(messages.compileUpgrade, params, token, progress));
+      getUpgradeDescriptions(compileUpgradeResult.compiledUpgrades).map(s => s.description).join('\n');
+      return await runDatabaseUpgrade(qs, db, compileUpgradeResult.compiledUpgrades, progress, token);
+    }
+    catch (e) {
+      void showAndLogErrorMessage(`Database upgrade failed: ${e}`);
+      return;
+    } finally {
+      void qs.logger.log('Done running database upgrade.');
+    }
+  } finally {
+    await currentUpgradeTmp.cleanup();
+  }
 }
 
 async function runDatabaseUpgrade(
-  qs: qsClient.QueryServerClient, db: DatabaseItem, upgrades: messages.CompiledUpgrades
+  qs: qsClient.QueryServerClient,
+  db: DatabaseItem,
+  upgrades: messages.CompiledUpgrades,
+  progress: ProgressCallback,
+  token: vscode.CancellationToken,
 ): Promise<messages.RunUpgradeResult> {
 
   if (db.contents === undefined || db.contents.datasetUri === undefined) {
@@ -195,9 +241,5 @@ async function runDatabaseUpgrade(
     toRun: upgrades
   };
 
-  return helpers.withProgress({
-    location: vscode.ProgressLocation.Notification,
-    title: 'Running database upgrades',
-    cancellable: true,
-  }, (progress, token) => qs.sendRequest(messages.runUpgrade, params, token, progress));
+  return qs.sendRequest(messages.runUpgrade, params, token, progress);
 }

@@ -5,16 +5,17 @@ import * as path from 'path';
 import * as tmp from 'tmp';
 import * as url from 'url';
 import { CancellationTokenSource } from 'vscode-jsonrpc';
-import * as messages from '../../src/messages';
-import * as qsClient from '../../src/queryserver-client';
-import * as cli from '../../src/cli';
-import { ProgressReporter, Logger } from '../../src/logging';
-import { ColumnValue } from '../../src/bqrs-cli-types';
+import * as messages from '../../pure/messages';
+import * as qsClient from '../../queryserver-client';
+import * as cli from '../../cli';
+import { ColumnValue } from '../../pure/bqrs-cli-types';
+import { extensions } from 'vscode';
+import { CodeQLExtensionInterface } from '../../extension';
+import { fail } from 'assert';
+import { skipIfNoCodeQL } from '../ensureCli';
 
 
-declare module 'url' {
-  export function pathToFileURL(urlStr: string): Url;
-}
+const baseDir = path.join(__dirname, '../../../test/data');
 
 const tmpDir = tmp.dirSync({ prefix: 'query_test_', keep: false, unsafeCleanup: true });
 
@@ -32,7 +33,10 @@ class Checkpoint<T> {
   constructor() {
     this.res = () => { /**/ };
     this.rej = () => { /**/ };
-    this.promise = new Promise((res, rej) => { this.res = res; this.rej = rej; });
+    this.promise = new Promise((res, rej) => {
+      this.res = res as () => Record<string, never>;
+      this.rej = rej;
+    });
   }
 
   async done(): Promise<T> {
@@ -60,13 +64,19 @@ type QueryTestCase = {
 // Test cases: queries to run and their expected results.
 const queryTestCases: QueryTestCase[] = [
   {
-    queryPath: path.join(__dirname, '../data/query.ql'),
+    queryPath: path.join(baseDir, 'query.ql'),
     expectedResultSets: {
       '#select': [[42, 3.14159, 'hello world', true]]
     }
   },
   {
-    queryPath: path.join(__dirname, '../data/multiple-result-sets.ql'),
+    queryPath: path.join(baseDir, 'compute-default-strings.ql'),
+    expectedResultSets: {
+      '#select': [[{ label: '(no string representation)' }]]
+    }
+  },
+  {
+    queryPath: path.join(baseDir, 'multiple-result-sets.ql'),
     expectedResultSets: {
       'edges': [[1, 2], [2, 3]],
       '#select': [['s']]
@@ -74,62 +84,42 @@ const queryTestCases: QueryTestCase[] = [
   }
 ];
 
+const db: messages.Dataset = {
+  dbDir: path.join(__dirname, '../test-db'),
+  workingSet: 'default',
+};
+
 describe('using the query server', function() {
   before(function() {
-    if (process.env['CODEQL_PATH'] === undefined) {
-      console.log('The environment variable CODEQL_PATH is not set. The query server tests, which require the CodeQL CLI, will be skipped.');
-      this.skip();
-    }
+    skipIfNoCodeQL(this);
   });
 
   // Note this does not work with arrow functions as the test case bodies:
   // ensure they are all written with standard anonymous functions.
-  this.timeout(10000);
+  this.timeout(20000);
 
-  const codeQlPath = process.env['CODEQL_PATH']!;
   let qs: qsClient.QueryServerClient;
   let cliServer: cli.CodeQLCliServer;
   const queryServerStarted = new Checkpoint<void>();
-  after(() => {
-    if (qs) {
-      qs.dispose();
-    }
-    if (cliServer) {
-      cliServer.dispose();
+
+  beforeEach(async () => {
+    try {
+      const extension = await extensions.getExtension<CodeQLExtensionInterface | Record<string, never>>('GitHub.vscode-codeql')!.activate();
+      if ('cliServer' in extension && 'qs' in extension) {
+        cliServer = extension.cliServer;
+        qs = extension.qs;
+        cliServer.quiet = true;
+      } else {
+        throw new Error('Extension not initialized. Make sure cli is downloaded and installed properly.');
+      }
+    } catch (e) {
+      fail(e);
     }
   });
 
   it('should be able to start the query server', async function() {
-    const consoleProgressReporter: ProgressReporter = {
-      report: (v: { message: string }) => console.log(`progress reporter says ${v.message}`)
-    };
-    const logger: Logger = {
-      log: async (s: string) => console.log('logger says', s),
-      show: () => { /**/ },
-      removeAdditionalLogLocation: async () => { /**/ },
-      getBaseLocation: () => ''
-    };
-    cliServer = new cli.CodeQLCliServer({
-      async getCodeQlPathWithoutVersionCheck(): Promise<string | undefined> {
-        return codeQlPath;
-      },
-    }, logger);
-    qs = new qsClient.QueryServerClient(
-      {
-        codeQlPath,
-        numThreads: 1,
-        queryMemoryMb: 1024,
-        timeoutSecs: 1000,
-        debug: false
-      },
-      cliServer,
-      {
-        logger
-      },
-      task => task(consoleProgressReporter, token)
-    );
     await qs.startQueryServer();
-    queryServerStarted.resolve();
+    await queryServerStarted.resolve();
   });
 
   for (const queryTestCase of queryTestCases) {
@@ -138,13 +128,19 @@ describe('using the query server', function() {
     const evaluationSucceeded = new Checkpoint<void>();
     const parsedResults = new Checkpoint<void>();
 
+    it('should register the database if necessary', async () => {
+      if (await cliServer.cliConstraints.supportsDatabaseRegistration()) {
+        await qs.sendRequest(messages.registerDatabases, { databases: [db] }, token, (() => { /**/ }) as any);
+      }
+    });
+
     it(`should be able to compile query ${queryName}`, async function() {
       await queryServerStarted.done();
       expect(fs.existsSync(queryTestCase.queryPath)).to.be.true;
       try {
         const qlProgram: messages.QlProgram = {
           libraryPath: [],
-          dbschemePath: path.join(__dirname, '../data/test.dbscheme'),
+          dbschemePath: path.join(baseDir, 'test.dbscheme'),
           queryPath: queryTestCase.queryPath
         };
         const params: messages.CompileQueryParams = {
@@ -156,6 +152,7 @@ describe('using the query server', function() {
             localChecking: false,
             noComputeGetUrl: false,
             noComputeToString: false,
+            computeDefaultStrings: true
           },
           queryToCheck: qlProgram,
           resultPath: COMPILED_QUERY_PATH,
@@ -163,10 +160,10 @@ describe('using the query server', function() {
         };
         const result = await qs.sendRequest(messages.compileQuery, params, token, () => { /**/ });
         expect(result.messages!.length).to.equal(0);
-        compilationSucceeded.resolve();
+        await compilationSucceeded.resolve();
       }
       catch (e) {
-        compilationSucceeded.reject(e);
+        await compilationSucceeded.reject(e);
       }
     });
 
@@ -174,7 +171,7 @@ describe('using the query server', function() {
       try {
         await compilationSucceeded.done();
         const callbackId = qs.registerCallback(_res => {
-          evaluationSucceeded.resolve();
+          void evaluationSucceeded.resolve();
         });
         const queryToRun: messages.QueryToRun = {
           resultsPath: RESULTS_PATH,
@@ -183,21 +180,17 @@ describe('using the query server', function() {
           id: callbackId,
           timeoutSecs: 1000,
         };
-        const db: messages.Dataset = {
-          dbDir: path.join(__dirname, '../test-db'),
-          workingSet: 'default',
-        };
         const params: messages.EvaluateQueriesParams = {
           db,
           evaluateId: callbackId,
           queries: [queryToRun],
-          stopOnError: false,
+          stopOnError: true,
           useSequenceHint: false
         };
         await qs.sendRequest(messages.runQueries, params, token, () => { /**/ });
       }
       catch (e) {
-        evaluationSucceeded.reject(e);
+        await evaluationSucceeded.reject(e);
       }
     });
 
@@ -210,7 +203,7 @@ describe('using the query server', function() {
         const decoded = await cliServer.bqrsDecode(RESULTS_PATH, resultSet.name);
         actualResultSets[resultSet.name] = decoded.tuples;
       }
-      parsedResults.resolve();
+      await parsedResults.resolve();
     });
 
     it(`should have correct results for query ${queryName}`, async function() {

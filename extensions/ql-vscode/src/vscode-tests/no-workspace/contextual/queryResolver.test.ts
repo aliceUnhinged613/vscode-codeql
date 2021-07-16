@@ -16,7 +16,8 @@ const expect = chai.expect;
 describe('queryResolver', () => {
   let module: Record<string, Function>;
   let writeFileSpy: sinon.SinonSpy;
-  let resolveDatasetFolderSpy: sinon.SinonStub;
+  let getQlPackForDbschemeSpy: sinon.SinonStub;
+  let getPrimaryDbschemeSpy: sinon.SinonStub;
   let mockCli: Record<string, sinon.SinonStub>;
   beforeEach(() => {
     mockCli = {
@@ -60,7 +61,7 @@ describe('queryResolver', () => {
 
   describe('qlpackOfDatabase', () => {
     it('should get the qlpack of a database', async () => {
-      resolveDatasetFolderSpy.returns({ qlpack: 'my-qlpack' });
+      getQlPackForDbschemeSpy.resolves('my-qlpack');
       const db = {
         contents: {
           datasetUri: {
@@ -70,20 +71,22 @@ describe('queryResolver', () => {
       };
       const result = await module.qlpackOfDatabase(mockCli, db);
       expect(result).to.eq('my-qlpack');
-      expect(resolveDatasetFolderSpy).to.have.been.calledWith(mockCli, '/path/to/database');
+      expect(getPrimaryDbschemeSpy).to.have.been.calledWith('/path/to/database');
     });
   });
 
   function createModule() {
     writeFileSpy = sinon.spy();
-    resolveDatasetFolderSpy = sinon.stub();
+    getQlPackForDbschemeSpy = sinon.stub();
+    getPrimaryDbschemeSpy = sinon.stub();
     return proxyquire('../../../contextual/queryResolver', {
       'fs-extra': {
         writeFile: writeFileSpy
       },
 
       '../helpers': {
-        resolveDatasetFolder: resolveDatasetFolderSpy,
+        getQlPackForDbscheme: getQlPackForDbschemeSpy,
+        getPrimaryDbscheme: getPrimaryDbschemeSpy,
         getOnDiskWorkspaceFolders: () => ({}),
         showAndLogErrorMessage: () => ({})
       }

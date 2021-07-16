@@ -1,9 +1,9 @@
 import * as React from 'react';
 
-import { SetComparisonsMessage } from '../../interface-types';
+import { SetComparisonsMessage } from '../../pure/interface-types';
 import RawTableHeader from '../../view/RawTableHeader';
 import { className } from '../../view/result-table-utils';
-import { ResultRow } from '../../adapt';
+import { ResultRow } from '../../pure/bqrs-cli-types';
 import RawTableRow from '../../view/RawTableRow';
 import { vscode } from '../../view/vscode-api';
 

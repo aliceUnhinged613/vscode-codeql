@@ -5,7 +5,9 @@ import * as vscode from 'vscode';
 import * as sinon from 'sinon';
 import * as chaiAsPromised from 'chai-as-promised';
 import { logger } from '../../logging';
-import { QueryHistoryManager } from '../../query-history';
+import { QueryHistoryManager, HistoryTreeDataProvider } from '../../query-history';
+import { CompletedQuery } from '../../query-results';
+import { QueryInfo } from '../../run-queries';
 
 chai.use(chaiAsPromised);
 const expect = chai.expect;
@@ -19,32 +21,30 @@ describe('query-history', () => {
   let showQuickPickSpy: sinon.SinonStub;
 
   let tryOpenExternalFile: Function;
+  let sandbox: sinon.SinonSandbox;
 
   beforeEach(() => {
-    showTextDocumentSpy = sinon.stub(vscode.window, 'showTextDocument');
-    showInformationMessageSpy = sinon.stub(
+    sandbox = sinon.createSandbox();
+
+    showTextDocumentSpy = sandbox.stub(vscode.window, 'showTextDocument');
+    showInformationMessageSpy = sandbox.stub(
       vscode.window,
       'showInformationMessage'
     );
-    showQuickPickSpy = sinon.stub(
+    showQuickPickSpy = sandbox.stub(
       vscode.window,
       'showQuickPick'
     );
-    executeCommandSpy = sinon.stub(vscode.commands, 'executeCommand');
-    sinon.stub(logger, 'log');
+    executeCommandSpy = sandbox.stub(vscode.commands, 'executeCommand');
+    sandbox.stub(logger, 'log');
     tryOpenExternalFile = (QueryHistoryManager.prototype as any).tryOpenExternalFile;
   });
 
   afterEach(() => {
-    (vscode.window.showTextDocument as sinon.SinonStub).restore();
-    (vscode.commands.executeCommand as sinon.SinonStub).restore();
-    (logger.log as sinon.SinonStub).restore();
-    (vscode.window.showInformationMessage as sinon.SinonStub).restore();
-    (vscode.window.showQuickPick as sinon.SinonStub).restore();
+    sandbox.restore();
   });
 
   describe('tryOpenExternalFile', () => {
-
     it('should open an external file', async () => {
       await tryOpenExternalFile('xxx');
       expect(showTextDocumentSpy).to.have.been.calledOnceWith(
@@ -205,9 +205,70 @@ describe('query-history', () => {
       expect(queryHistory.compareWithItem).to.be.eq('a');
     });
   });
+
+  describe('HistoryTreeDataProvider', () => {
+    let historyTreeDataProvider: HistoryTreeDataProvider;
+    beforeEach(() => {
+      historyTreeDataProvider = new HistoryTreeDataProvider(vscode.Uri.file('/a/b/c').fsPath);
+    });
+
+    it('should get a tree item with raw results', async () => {
+      const mockQuery = {
+        query: {
+          hasInterpretedResults: () => Promise.resolve(false)
+        } as QueryInfo,
+        didRunSuccessfully: true,
+        toString: () => 'mock label'
+      } as CompletedQuery;
+      const treeItem = await historyTreeDataProvider.getTreeItem(mockQuery);
+      expect(treeItem.command).to.deep.eq({
+        title: 'Query History Item',
+        command: 'codeQLQueryHistory.itemClicked',
+        arguments: [mockQuery],
+      });
+      expect(treeItem.label).to.eq('mock label');
+      expect(treeItem.contextValue).to.eq('rawResultsItem');
+      expect(treeItem.iconPath).to.be.undefined;
+    });
+
+    it('should get a tree item with interpreted results', async () => {
+      const mockQuery = {
+        query: {
+          // as above, except for this line
+          hasInterpretedResults: () => Promise.resolve(true)
+        } as QueryInfo,
+        didRunSuccessfully: true,
+        toString: () => 'mock label'
+      } as CompletedQuery;
+      const treeItem = await historyTreeDataProvider.getTreeItem(mockQuery);
+      expect(treeItem.contextValue).to.eq('interpretedResultsItem');
+    });
+
+    it('should get a tree item that did not complete successfully', async () => {
+      const mockQuery = {
+        query: {
+          hasInterpretedResults: () => Promise.resolve(true)
+        } as QueryInfo,
+        // as above, except for this line
+        didRunSuccessfully: false,
+        toString: () => 'mock label'
+      } as CompletedQuery;
+      const treeItem = await historyTreeDataProvider.getTreeItem(mockQuery);
+      expect(treeItem.iconPath).to.eq(vscode.Uri.file('/a/b/c/media/red-x.svg').fsPath);
+    });
+
+    it('should get children', () => {
+      const mockQuery = {
+        databaseName: 'abc'
+      } as CompletedQuery;
+      historyTreeDataProvider.allHistory.push(mockQuery);
+      expect(historyTreeDataProvider.getChildren()).to.deep.eq([mockQuery]);
+      expect(historyTreeDataProvider.getChildren(mockQuery)).to.deep.eq([]);
+    });
+  });
 });
 
-function createMockQueryHistory(allHistory: {}[]) {
+function createMockQueryHistory(allHistory: Record<string, unknown>[]) {
   return {
     assertSingleQuery: (QueryHistoryManager.prototype as any).assertSingleQuery,
     findOtherQueryToCompare: (QueryHistoryManager.prototype as any).findOtherQueryToCompare,

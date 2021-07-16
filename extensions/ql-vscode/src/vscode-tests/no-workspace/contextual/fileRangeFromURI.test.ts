@@ -5,11 +5,41 @@ import { Uri, Range } from 'vscode';
 
 import fileRangeFromURI from '../../../contextual/fileRangeFromURI';
 import { DatabaseItem } from '../../../databases';
-import { WholeFileLocation, LineColumnLocation } from '../../../bqrs-cli-types';
+import { WholeFileLocation, LineColumnLocation } from '../../../pure/bqrs-cli-types';
 
 describe('fileRangeFromURI', () => {
-  it('should return undefined when value is a string', () => {
+  it('should return undefined when value is not a file URI', () => {
     expect(fileRangeFromURI('hucairz', createMockDatabaseItem())).to.be.undefined;
+  });
+
+  it('should fail to find a location when not a file URI and a full 5 part location', () => {
+    expect(fileRangeFromURI({
+      uri: 'https://yahoo.com',
+      startLine: 1,
+      startColumn: 2,
+      endLine: 3,
+      endColumn: 4,
+    } as LineColumnLocation, createMockDatabaseItem())).to.be.undefined;
+  });
+
+  it('should fail to find a location when there is a silly protocol', () => {
+    expect(fileRangeFromURI({
+      uri: 'filesilly://yahoo.com',
+      startLine: 1,
+      startColumn: 2,
+      endLine: 3,
+      endColumn: 4,
+    } as LineColumnLocation, createMockDatabaseItem())).to.be.undefined;
+  });
+
+  it('should return undefined when value is an empty uri', () => {
+    expect(fileRangeFromURI({
+      uri: 'file:/',
+      startLine: 1,
+      startColumn: 2,
+      endLine: 3,
+      endColumn: 4,
+    } as LineColumnLocation, createMockDatabaseItem())).to.be.undefined;
   });
 
   it('should return a range for a WholeFileLocation', () => {
@@ -36,7 +66,7 @@ describe('fileRangeFromURI', () => {
 
   function createMockDatabaseItem(): DatabaseItem {
     return {
-      resolveSourceFile: (file: string) => Uri.file(file)
+      resolveSourceFile: (file: string) => Uri.parse(file)
     } as DatabaseItem;
   }
 });

@@ -84,9 +84,22 @@ export function encodeSourceArchiveUri(ref: ZipFileReference): vscode.Uri {
   // This lets us separate the paths, ignoring the leading slash if we added one.
   const sourceArchiveZipPathEndIndex = sourceArchiveZipPathStartIndex + sourceArchiveZipPath.length;
   const authority = `${sourceArchiveZipPathStartIndex}-${sourceArchiveZipPathEndIndex}`;
-  return vscode.Uri.parse(zipArchiveScheme + ':/').with({
+  return vscode.Uri.parse(zipArchiveScheme + ':/', true).with({
     path: encodedPath,
     authority,
+  });
+}
+
+/**
+ * Convenience method to create a codeql-zip-archive with a path to the root
+ * archive
+ *
+ * @param pathToArchive the filesystem path to the root of the archive
+ */
+export function encodeArchiveBasePath(sourceArchiveZipPath: string) {
+  return encodeSourceArchiveUri({
+    sourceArchiveZipPath,
+    pathWithinSourceArchive: ''
   });
 }
 
@@ -100,6 +113,14 @@ class InvalidSourceArchiveUriError extends Error {
 
 /** Decodes an encoded source archive URI into its corresponding paths. Inverse of `encodeSourceArchiveUri`. */
 export function decodeSourceArchiveUri(uri: vscode.Uri): ZipFileReference {
+  if (!uri.authority) {
+    // Uri is malformed, but this is recoverable
+    void logger.log(`Warning: ${new InvalidSourceArchiveUriError(uri).message}`);
+    return {
+      pathWithinSourceArchive: '/',
+      sourceArchiveZipPath: uri.path
+    };
+  }
   const match = sourceArchiveUriAuthorityPattern.exec(uri.authority);
   if (match === null)
     throw new InvalidSourceArchiveUriError(uri);
@@ -108,7 +129,7 @@ export function decodeSourceArchiveUri(uri: vscode.Uri): ZipFileReference {
   if (isNaN(zipPathStartIndex) || isNaN(zipPathEndIndex))
     throw new InvalidSourceArchiveUriError(uri);
   return {
-    pathWithinSourceArchive: uri.path.substring(zipPathEndIndex),
+    pathWithinSourceArchive: uri.path.substring(zipPathEndIndex) || '/',
     sourceArchiveZipPath: uri.path.substring(zipPathStartIndex, zipPathEndIndex),
   };
 }
@@ -120,7 +141,7 @@ function ensureFile(map: DirectoryHierarchyMap, file: string) {
   const dirname = path.dirname(file);
   if (dirname === '.') {
     const error = `Ill-formed path ${file} in zip archive (expected absolute path)`;
-    logger.log(error);
+    void logger.log(error);
     throw new Error(error);
   }
   ensureDir(map, dirname);

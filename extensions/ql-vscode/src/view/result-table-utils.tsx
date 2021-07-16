@@ -1,9 +1,9 @@
 import * as React from 'react';
-import { LocationValue, ResolvableLocationValue } from '../bqrs-types';
-import { tryGetResolvableLocation } from '../bqrs-utils';
-import { RawResultsSortState, QueryMetadata, SortDirection } from '../interface-types';
-import { assertNever } from '../helpers-pure';
-import { ResultSet } from '../interface-types';
+import { UrlValue, ResolvableLocationValue } from '../pure/bqrs-cli-types';
+import { isStringLoc, tryGetResolvableLocation } from '../pure/bqrs-utils';
+import { RawResultsSortState, QueryMetadata, SortDirection } from '../pure/interface-types';
+import { assertNever } from '../pure/helpers-pure';
+import { ResultSet } from '../pure/interface-types';
 import { vscode } from './vscode-api';
 
 export interface ResultTableProps {
@@ -28,7 +28,8 @@ export interface ResultTableProps {
 }
 
 export const className = 'vscode-codeql__result-table';
-export const tableSelectionHeaderClassName = 'vscode-codeql__table-selection-header';
+export const tableHeaderClassName = 'vscode-codeql__table-selection-header';
+export const tableHeaderItemClassName = 'vscode-codeql__table-selection-header-item';
 export const alertExtrasClassName = `${className}-alert-extras`;
 export const toggleDiagnosticsClassName = `${className}-toggle-diagnostics`;
 export const evenRowClassName = 'vscode-codeql__result-table-row--even';
@@ -45,7 +46,9 @@ export function jumpToLocationHandler(
     jumpToLocation(loc, databaseUri);
     e.preventDefault();
     e.stopPropagation();
-    if (callback) callback();
+    if (callback) {
+      callback();
+    }
   };
 }
 
@@ -57,31 +60,51 @@ export function jumpToLocation(loc: ResolvableLocationValue, databaseUri: string
   });
 }
 
+export function openFile(filePath: string): void {
+  vscode.postMessage({
+    t: 'openFile',
+    filePath
+  });
+}
+
 /**
  * Render a location as a link which when clicked displays the original location.
  */
-export function renderLocation(loc: LocationValue | undefined, label: string | undefined,
-  databaseUri: string, title?: string, callback?: () => void): JSX.Element {
+export function renderLocation(
+  loc: UrlValue | undefined,
+  label: string | undefined,
+  databaseUri: string,
+  title?: string,
+  callback?: () => void
+): JSX.Element {
 
   // If the label was empty, use a placeholder instead, so the link is still clickable.
   let displayLabel = label;
-  if (label === undefined || label === '')
+  if (!label) {
     displayLabel = '[empty string]';
-  else if (label.match(/^\s+$/))
+  } else if (label.match(/^\s+$/)) {
     displayLabel = `[whitespace: "${label}"]`;
+  }
 
-  if (loc !== undefined) {
-    const resolvableLoc = tryGetResolvableLocation(loc);
-    if (resolvableLoc !== undefined) {
-      return <a href="#"
+  if (loc === undefined) {
+    return <span>{displayLabel}</span>;
+  } else if (isStringLoc(loc)) {
+    return <a href={loc}>{loc}</a>;
+  }
+
+  const resolvableLoc = tryGetResolvableLocation(loc);
+  if (resolvableLoc !== undefined) {
+    return (
+      <a href="#"
         className="vscode-codeql__result-table-location-link"
         title={title}
-        onClick={jumpToLocationHandler(resolvableLoc, databaseUri, callback)}>{displayLabel}</a>;
-    } else {
-      return <span title={title}>{displayLabel}</span>;
-    }
+        onClick={jumpToLocationHandler(resolvableLoc, databaseUri, callback)}>
+        {displayLabel}
+      </a>
+    );
+  } else {
+    return <span title={title}>{displayLabel}</span>;
   }
-  return <span />;
 }
 
 /**
@@ -116,4 +139,10 @@ export function nextSortDirection(direction: SortDirection | undefined, includeU
     default:
       return assertNever(direction);
   }
+}
+
+export function emptyQueryResultsMessage(): JSX.Element {
+  return <div className='vscode-codeql__empty-query-message'><span>
+    This query returned no results. If this isn&apos;t what you were expecting, and for effective query-writing tips, check out the <a href="https://codeql.github.com/docs/codeql-language-guides/">CodeQL language guides</a>.
+  </span></div>;
 }

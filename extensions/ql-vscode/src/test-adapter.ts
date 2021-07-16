@@ -1,3 +1,4 @@
+import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
@@ -15,11 +16,11 @@ import {
 import { TestAdapterRegistrar } from 'vscode-test-adapter-util';
 import { QLTestFile, QLTestNode, QLTestDirectory, QLTestDiscovery } from './qltest-discovery';
 import { Event, EventEmitter, CancellationTokenSource, CancellationToken } from 'vscode';
-import { DisposableObject } from './vscode-utils/disposable-object';
-import { QLPackDiscovery } from './qlpack-discovery';
+import { DisposableObject } from './pure/disposable-object';
 import { CodeQLCliServer } from './cli';
-import { getOnDiskWorkspaceFolders } from './helpers';
+import { getOnDiskWorkspaceFolders, showAndLogErrorMessage, showAndLogWarningMessage } from './helpers';
 import { testLogger } from './logging';
+import { DatabaseItem, DatabaseManager } from './databases';
 
 /**
  * Get the full path of the `.expected` file for the specified QL test.
@@ -58,13 +59,13 @@ function getTestOutputFile(testPath: string, extension: string): string {
  * A factory service that creates `QLTestAdapter` objects for workspace folders on demand.
  */
 export class QLTestAdapterFactory extends DisposableObject {
-  constructor(testHub: TestHub, cliServer: CodeQLCliServer) {
+  constructor(testHub: TestHub, cliServer: CodeQLCliServer, databaseManager: DatabaseManager) {
     super();
 
     // this will register a QLTestAdapter for each WorkspaceFolder
     this.push(new TestAdapterRegistrar(
       testHub,
-      workspaceFolder => new QLTestAdapter(workspaceFolder, cliServer)
+      workspaceFolder => new QLTestAdapter(workspaceFolder, cliServer, databaseManager)
     ));
   }
 }
@@ -82,7 +83,6 @@ function changeExtension(p: string, ext: string): string {
  * Test adapter for QL tests.
  */
 export class QLTestAdapter extends DisposableObject implements TestAdapter {
-  private readonly qlPackDiscovery: QLPackDiscovery;
   private readonly qlTestDiscovery: QLTestDiscovery;
   private readonly _tests = this.push(
     new EventEmitter<TestLoadStartedEvent | TestLoadFinishedEvent>());
@@ -93,13 +93,12 @@ export class QLTestAdapter extends DisposableObject implements TestAdapter {
 
   constructor(
     public readonly workspaceFolder: vscode.WorkspaceFolder,
-    private readonly cliServer: CodeQLCliServer
+    private readonly cliServer: CodeQLCliServer,
+    private readonly databaseManager: DatabaseManager
   ) {
     super();
 
-    this.qlPackDiscovery = this.push(new QLPackDiscovery(workspaceFolder, cliServer));
-    this.qlTestDiscovery = this.push(new QLTestDiscovery(this.qlPackDiscovery, workspaceFolder, cliServer));
-    this.qlPackDiscovery.refresh();
+    this.qlTestDiscovery = this.push(new QLTestDiscovery(workspaceFolder, cliServer));
     this.qlTestDiscovery.refresh();
 
     this.push(this.qlTestDiscovery.onDidChangeTests(this.discoverTests, this));
@@ -160,20 +159,20 @@ export class QLTestAdapter extends DisposableObject implements TestAdapter {
   private discoverTests(): void {
     this._tests.fire({ type: 'started' } as TestLoadStartedEvent);
 
-    const testDirectories = this.qlTestDiscovery.testDirectories;
-    const children = testDirectories.map(
-      testDirectory => QLTestAdapter.createTestSuiteInfo(testDirectory, testDirectory.name)
-    );
-    const testSuite: TestSuiteInfo = {
-      type: 'suite',
-      label: 'CodeQL',
-      id: '.',
-      children
-    };
-
+    const testDirectory = this.qlTestDiscovery.testDirectory;
+    let testSuite: TestSuiteInfo | undefined;
+    if (testDirectory?.children.length) {
+      const children = QLTestAdapter.createTestOrSuiteInfos(testDirectory.children);
+      testSuite = {
+        type: 'suite',
+        label: 'CodeQL',
+        id: testDirectory.path,
+        children
+      };
+    }
     this._tests.fire({
       type: 'finished',
-      suite: children.length > 0 ? testSuite : undefined
+      suite: testSuite
     } as TestLoadFinishedEvent);
   }
 
@@ -186,17 +185,84 @@ export class QLTestAdapter extends DisposableObject implements TestAdapter {
     testLogger.outputChannel.show(true);
 
     this.runningTask = this.track(new CancellationTokenSource());
+    const token = this.runningTask.token;
 
     this._testStates.fire({ type: 'started', tests: tests } as TestRunStartedEvent);
 
+    const currentDatabaseUri = this.databaseManager.currentDatabaseItem?.databaseUri;
+    const databasesUnderTest: DatabaseItem[] = [];
+    for (const database of this.databaseManager.databaseItems) {
+      for (const test of tests) {
+        if (await database.isAffectedByTest(test)) {
+          databasesUnderTest.push(database);
+          break;
+        }
+      }
+    }
+
+    await this.removeDatabasesBeforeTests(databasesUnderTest, token);
     try {
-      await this.runTests(tests, this.runningTask.token);
+      await this.runTests(tests, token);
+    } catch (e) {
+      // CodeQL testing can throw exception even in normal scenarios. For example, if the test run
+      // produces no output (which is normal), the testing command would throw an exception on
+      // unexpected EOF during json parsing. So nothing needs to be done here - all the relevant
+      // error information (if any) should have already been written to the test logger.
     }
-    catch (e) {
-      /**/
-    }
+    await this.reopenDatabasesAfterTests(databasesUnderTest, currentDatabaseUri, token);
+
     this._testStates.fire({ type: 'finished' } as TestRunFinishedEvent);
     this.clearTask();
+  }
+
+  private async removeDatabasesBeforeTests(
+    databasesUnderTest: DatabaseItem[], token: vscode.CancellationToken): Promise<void> {
+    for (const database of databasesUnderTest) {
+      try {
+        await this.databaseManager
+          .removeDatabaseItem(_ => { /* no progress reporting */ }, token, database);
+      } catch (e) {
+        // This method is invoked from Test Explorer UI, and testing indicates that Test
+        // Explorer UI swallows any thrown exception without reporting it to the user.
+        // So we need to display the error message ourselves and then rethrow.
+        void showAndLogErrorMessage(`Cannot remove database ${database.name}: ${e}`);
+        throw e;
+      }
+    }
+  }
+
+  private async reopenDatabasesAfterTests(
+    databasesUnderTest: DatabaseItem[],
+    currentDatabaseUri: vscode.Uri | undefined,
+    token: vscode.CancellationToken): Promise<void> {
+    for (const closedDatabase of databasesUnderTest) {
+      const uri = closedDatabase.databaseUri;
+      if (await this.isFileAccessible(uri)) {
+        try {
+          const reopenedDatabase = await this.databaseManager
+            .openDatabase(_ => { /* no progress reporting */ }, token, uri);
+          await this.databaseManager.renameDatabaseItem(reopenedDatabase, closedDatabase.name);
+          if (currentDatabaseUri == uri) {
+            await this.databaseManager.setCurrentDatabaseItem(reopenedDatabase, true);
+          }
+        } catch (e) {
+          // This method is invoked from Test Explorer UI, and testing indicates that Test
+          // Explorer UI swallows any thrown exception without reporting it to the user.
+          // So we need to display the error message ourselves and then rethrow.
+          void showAndLogWarningMessage(`Cannot reopen database ${uri}: ${e}`);
+          throw e;
+        }
+      }
+    }
+  }
+
+  private async isFileAccessible(uri: vscode.Uri): Promise<boolean> {
+    try {
+      await fs.access(uri.fsPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private clearTask(): void {
@@ -209,7 +275,7 @@ export class QLTestAdapter extends DisposableObject implements TestAdapter {
 
   public cancel(): void {
     if (this.runningTask !== undefined) {
-      testLogger.log('Cancelling test run...');
+      void testLogger.log('Cancelling test run...');
       this.runningTask.cancel();
       this.clearTask();
     }
@@ -221,10 +287,25 @@ export class QLTestAdapter extends DisposableObject implements TestAdapter {
       cancellationToken: cancellationToken,
       logger: testLogger
     })) {
+      const state = event.pass
+        ? 'passed'
+        : event.messages?.length
+          ? 'errored'
+          : 'failed';
+      let message: string | undefined;
+      if (event.failureDescription || event.diff?.length) {
+        message = ['', `${state}: ${event.test}`, event.failureDescription || event.diff?.join('\n'), ''].join('\n');
+        void testLogger.log(message);
+      }
       this._testStates.fire({
         type: 'test',
-        state: event.pass ? 'passed' : 'failed',
-        test: event.test
+        state,
+        test: event.test,
+        message,
+        decorations: event.messages?.map(msg => ({
+          line: msg.position.line,
+          message: msg.message
+        }))
       });
     }
   }

@@ -3,8 +3,7 @@ import * as unzipper from 'unzipper';
 import { zip } from 'zip-a-folder';
 import {
   Uri,
-  ProgressOptions,
-  ProgressLocation,
+  CancellationToken,
   commands,
   window,
 } from 'vscode';
@@ -13,57 +12,50 @@ import * as path from 'path';
 
 import { DatabaseManager, DatabaseItem } from './databases';
 import {
-  ProgressCallback,
-  showAndLogErrorMessage,
-  withProgress,
   showAndLogInformationMessage,
 } from './helpers';
+import {
+  reportStreamProgress,
+  ProgressCallback,
+} from './commandRunner';
 import { logger } from './logging';
+import { tmpDir } from './run-queries';
 
 /**
  * Prompts a user to fetch a database from a remote location. Database is assumed to be an archive file.
  *
- * @param databasesManager the DatabaseManager
+ * @param databaseManager the DatabaseManager
  * @param storagePath where to store the unzipped database.
  */
 export async function promptImportInternetDatabase(
-  databasesManager: DatabaseManager,
-  storagePath: string
+  databaseManager: DatabaseManager,
+  storagePath: string,
+  progress: ProgressCallback,
+  token: CancellationToken,
 ): Promise<DatabaseItem | undefined> {
-  let item: DatabaseItem | undefined = undefined;
-
-  try {
-    const databaseUrl = await window.showInputBox({
-      prompt: 'Enter URL of zipfile of database to download',
-    });
-    if (databaseUrl) {
-      validateHttpsUrl(databaseUrl);
-
-      const progressOptions: ProgressOptions = {
-        location: ProgressLocation.Notification,
-        title: 'Adding database from URL',
-        cancellable: false,
-      };
-      await withProgress(
-        progressOptions,
-        async (progress) =>
-          (item = await databaseArchiveFetcher(
-            databaseUrl,
-            databasesManager,
-            storagePath,
-            progress
-          ))
-      );
-      if (item) {
-        commands.executeCommand('codeQLDatabases.focus');
-        showAndLogInformationMessage('Database downloaded and imported successfully.');
-      }
-    }
-  } catch (e) {
-    showAndLogErrorMessage(e.message);
+  const databaseUrl = await window.showInputBox({
+    prompt: 'Enter URL of zipfile of database to download',
+  });
+  if (!databaseUrl) {
+    return;
   }
 
+  validateHttpsUrl(databaseUrl);
+
+  const item = await databaseArchiveFetcher(
+    databaseUrl,
+    databaseManager,
+    storagePath,
+    progress,
+    token
+  );
+
+  if (item) {
+    await commands.executeCommand('codeQLDatabases.focus');
+    void showAndLogInformationMessage('Database downloaded and imported successfully.');
+  }
   return item;
+
 }
 
 /**
@@ -71,97 +63,80 @@ export async function promptImportInternetDatabase(
  * User enters a project url and then the user is asked which language
  * to download (if there is more than one)
  *
- * @param databasesManager the DatabaseManager
+ * @param databaseManager the DatabaseManager
  * @param storagePath where to store the unzipped database.
  */
 export async function promptImportLgtmDatabase(
-  databasesManager: DatabaseManager,
-  storagePath: string
+  databaseManager: DatabaseManager,
+  storagePath: string,
+  progress: ProgressCallback,
+  token: CancellationToken
 ): Promise<DatabaseItem | undefined> {
-  let item: DatabaseItem | undefined = undefined;
-
-  try {
-    const lgtmUrl = await window.showInputBox({
-      prompt:
-        'Enter the project URL on LGTM (e.g., https://lgtm.com/projects/g/github/codeql)',
-    });
-    if (!lgtmUrl) {
-      return;
-    }
-    if (looksLikeLgtmUrl(lgtmUrl)) {
-      const databaseUrl = await convertToDatabaseUrl(lgtmUrl);
-      if (databaseUrl) {
-        const progressOptions: ProgressOptions = {
-          location: ProgressLocation.Notification,
-          title: 'Adding database from LGTM',
-          cancellable: false,
-        };
-        await withProgress(
-          progressOptions,
-          async (progress) =>
-            (item = await databaseArchiveFetcher(
-              databaseUrl,
-              databasesManager,
-              storagePath,
-              progress
-            ))
-        );
-        if (item) {
-          commands.executeCommand('codeQLDatabases.focus');
-          showAndLogInformationMessage('Database downloaded and imported successfully.');
-        }
-      }
-    } else {
-      throw new Error(`Invalid LGTM URL: ${lgtmUrl}`);
-    }
-  } catch (e) {
-    showAndLogErrorMessage(e.message);
+  const lgtmUrl = await window.showInputBox({
+    prompt:
+      'Enter the project slug or URL on LGTM (e.g., g/github/codeql or https://lgtm.com/projects/g/github/codeql)',
+  });
+  if (!lgtmUrl) {
+    return;
   }
 
-  return item;
+  if (looksLikeLgtmUrl(lgtmUrl)) {
+    const databaseUrl = await convertToDatabaseUrl(lgtmUrl);
+    if (databaseUrl) {
+      const item = await databaseArchiveFetcher(
+        databaseUrl,
+        databaseManager,
+        storagePath,
+        progress,
+        token
+      );
+      if (item) {
+        await commands.executeCommand('codeQLDatabases.focus');
+        void showAndLogInformationMessage('Database downloaded and imported successfully.');
+      }
+      return item;
+    }
+  } else {
+    throw new Error(`Invalid LGTM URL: ${lgtmUrl}`);
+  }
+  return;
 }
 
 /**
  * Imports a database from a local archive.
  *
  * @param databaseUrl the file url of the archive to import
- * @param databasesManager the DatabaseManager
+ * @param databaseManager the DatabaseManager
  * @param storagePath where to store the unzipped database.
  */
 export async function importArchiveDatabase(
   databaseUrl: string,
-  databasesManager: DatabaseManager,
-  storagePath: string
+  databaseManager: DatabaseManager,
+  storagePath: string,
+  progress: ProgressCallback,
+  token: CancellationToken,
 ): Promise<DatabaseItem | undefined> {
-  let item: DatabaseItem | undefined = undefined;
   try {
-    const progressOptions: ProgressOptions = {
-      location: ProgressLocation.Notification,
-      title: 'Importing database from archive',
-      cancellable: false,
-    };
-    await withProgress(
-      progressOptions,
-      async (progress) =>
-        (item = await databaseArchiveFetcher(
-          databaseUrl,
-          databasesManager,
-          storagePath,
-          progress
-        ))
+    const item = await databaseArchiveFetcher(
+      databaseUrl,
+      databaseManager,
+      storagePath,
+      progress,
+      token
     );
     if (item) {
-      commands.executeCommand('codeQLDatabases.focus');
-      showAndLogInformationMessage('Database unzipped and imported successfully.');
+      await commands.executeCommand('codeQLDatabases.focus');
+      void showAndLogInformationMessage('Database unzipped and imported successfully.');
     }
+    return item;
   } catch (e) {
     if (e.message.includes('unexpected end of file')) {
-      showAndLogErrorMessage('Database is corrupt or too large. Try unzipping outside of VS Code and importing the unzipped folder instead.');
+      throw new Error('Database is corrupt or too large. Try unzipping outside of VS Code and importing the unzipped folder instead.');
     } else {
-      showAndLogErrorMessage(e.message);
+      // delegate
+      throw e;
     }
   }
-  return item;
 }
 
 /**
@@ -169,17 +144,19 @@ export async function importArchiveDatabase(
  * or in the local filesystem.
  *
  * @param databaseUrl URL from which to grab the database
- * @param databasesManager the DatabaseManager
+ * @param databaseManager the DatabaseManager
  * @param storagePath where to store the unzipped database.
- * @param progressCallback optional callback to send progress messages to
+ * @param progress callback to send progress messages to
+ * @param token cancellation token
  */
 async function databaseArchiveFetcher(
   databaseUrl: string,
-  databasesManager: DatabaseManager,
+  databaseManager: DatabaseManager,
   storagePath: string,
-  progressCallback?: ProgressCallback
+  progress: ProgressCallback,
+  token: CancellationToken
 ): Promise<DatabaseItem> {
-  progressCallback?.({
+  progress({
     message: 'Getting database',
     step: 1,
     maxStep: 4,
@@ -191,12 +168,12 @@ async function databaseArchiveFetcher(
   const unzipPath = await getStorageFolder(storagePath, databaseUrl);
 
   if (isFile(databaseUrl)) {
-    await readAndUnzip(databaseUrl, unzipPath);
+    await readAndUnzip(databaseUrl, unzipPath, progress);
   } else {
-    await fetchAndUnzip(databaseUrl, unzipPath, progressCallback);
+    await fetchAndUnzip(databaseUrl, unzipPath, progress);
   }
 
-  progressCallback?.({
+  progress({
     message: 'Opening database',
     step: 3,
     maxStep: 4,
@@ -209,15 +186,15 @@ async function databaseArchiveFetcher(
     'codeql-database.yml'
   );
   if (dbPath) {
-    progressCallback?.({
+    progress({
       message: 'Validating and fixing source location',
       step: 4,
       maxStep: 4,
     });
     await ensureZippedSourceLocation(dbPath);
 
-    const item = await databasesManager.openDatabase(Uri.file(dbPath));
-    databasesManager.setCurrentDatabaseItem(item);
+    const item = await databaseManager.openDatabase(progress, token, Uri.file(dbPath));
+    await databaseManager.setCurrentDatabaseItem(item);
     return item;
   } else {
     throw new Error('Database not found in archive.');
@@ -264,48 +241,67 @@ function validateHttpsUrl(databaseUrl: string) {
   }
 }
 
-async function readAndUnzip(databaseUrl: string, unzipPath: string) {
-  const databaseFile = Uri.parse(databaseUrl).fsPath;
-  const directory = await unzipper.Open.file(databaseFile);
+async function readAndUnzip(
+  zipUrl: string,
+  unzipPath: string,
+  progress?: ProgressCallback
+) {
+  // TODO: Providing progress as the file is unzipped is currently blocked
+  // on https://github.com/ZJONSSON/node-unzipper/issues/222
+  const zipFile = Uri.parse(zipUrl).fsPath;
+  progress?.({
+    maxStep: 10,
+    step: 9,
+    message: `Unzipping into ${path.basename(unzipPath)}`
+  });
+  // Must get the zip central directory since streaming the
+  // zip contents may not have correct local file headers.
+  // Instead, we can only rely on the central directory.
+  const directory = await unzipper.Open.file(zipFile);
   await directory.extract({ path: unzipPath });
 }
 
 async function fetchAndUnzip(
   databaseUrl: string,
   unzipPath: string,
-  progressCallback?: ProgressCallback
+  progress?: ProgressCallback
 ) {
-  const response = await fetch(databaseUrl);
+  // Although it is possible to download and stream directly to an unzipped directory,
+  // we need to avoid this for two reasons. The central directory is located at the
+  // end of the zip file. It is the source of truth of the content locations. Individual
+  // file headers may be incorrect. Additionally, saving to file first will reduce memory
+  // pressure compared with unzipping while downloading the archive.
 
-  await checkForFailingResponse(response);
+  const archivePath = path.join(tmpDir.name, `archive-${Date.now()}.zip`);
 
-  const unzipStream = unzipper.Extract({
-    path: unzipPath,
-  });
-
-  progressCallback?.({
+  progress?.({
     maxStep: 3,
-    message: 'Unzipping database',
-    step: 2,
+    message: 'Downloading database',
+    step: 1,
   });
-  await new Promise((resolve, reject) => {
-    const handler = (err: Error) => {
-      if (err.message.startsWith('invalid signature')) {
-        reject(new Error('Not a valid archive.'));
-      } else {
-        reject(err);
-      }
-    };
-    response.body.on('error', handler);
-    unzipStream.on('error', handler);
-    unzipStream.on('close', resolve);
-    response.body.pipe(unzipStream);
-  });
+
+  const response = await checkForFailingResponse(await fetch(databaseUrl));
+  const archiveFileStream = fs.createWriteStream(archivePath);
+
+  const contentLength = response.headers.get('content-length');
+  const totalNumBytes = contentLength ? parseInt(contentLength, 10) : undefined;
+  reportStreamProgress(response.body, 'Downloading database', totalNumBytes, progress);
+
+  await new Promise((resolve, reject) =>
+    response.body.pipe(archiveFileStream)
+      .on('finish', resolve)
+      .on('error', reject)
+  );
+
+  await readAndUnzip(Uri.file(archivePath).toString(true), unzipPath, progress);
+
+  // remove archivePath eagerly since these archives can be large.
+  await fs.remove(archivePath);
 }
 
-async function checkForFailingResponse(response: Response): Promise<void | never> {
+async function checkForFailingResponse(response: Response): Promise<Response | never> {
   if (response.ok) {
-    return;
+    return response;
   }
 
   // An error downloading the database. Attempt to extract the resaon behind it.
@@ -356,13 +352,14 @@ export async function findDirWithFile(
 
 /**
  * The URL pattern is https://lgtm.com/projects/{provider}/{org}/{name}/{irrelevant-subpages}.
- * There are several possibilities for the provider: in addition to GitHub.com(g),
+ * There are several possibilities for the provider: in addition to GitHub.com (g),
  * LGTM currently hosts projects from Bitbucket (b), GitLab (gl) and plain git (git).
  *
- * After the {provider}/{org}/{name} path components, there may be the components
- * related to sub pages.
+ * This function accepts any url that matches the pattern above. It also accepts the
+ * raw project slug, e.g., `g/myorg/myproject`
  *
- * This function accepts any url that matches the patter above
+ * After the `{provider}/{org}/{name}` path components, there may be the components
+ * related to sub pages.
  *
  * @param lgtmUrl The URL to the lgtm project
  *
@@ -372,6 +369,10 @@ export async function findDirWithFile(
 export function looksLikeLgtmUrl(lgtmUrl: string | undefined): lgtmUrl is string {
   if (!lgtmUrl) {
     return false;
+  }
+
+  if (convertRawLgtmSlug(lgtmUrl)) {
+    return true;
   }
 
   try {
@@ -391,9 +392,23 @@ export function looksLikeLgtmUrl(lgtmUrl: string | undefined): lgtmUrl is string
   }
 }
 
+function convertRawLgtmSlug(maybeSlug: string): string | undefined {
+  if (!maybeSlug) {
+    return;
+  }
+  const segments = maybeSlug.split('/');
+  const providers = ['g', 'gl', 'b', 'git'];
+  if (segments.length === 3 && providers.includes(segments[0])) {
+    return `https://lgtm.com/projects/${maybeSlug}`;
+  }
+  return;
+}
+
 // exported for testing
 export async function convertToDatabaseUrl(lgtmUrl: string) {
   try {
+    lgtmUrl = convertRawLgtmSlug(lgtmUrl) || lgtmUrl;
+
     const uri = Uri.parse(lgtmUrl, true);
     const paths = ['api', 'v1.0'].concat(
       uri.path.split('/').filter((segment) => segment)
@@ -418,7 +433,7 @@ export async function convertToDatabaseUrl(lgtmUrl: string) {
       language,
     ].join('/')}`;
   } catch (e) {
-    logger.log(`Error: ${e.message}`);
+    void logger.log(`Error: ${e.message}`);
     throw new Error(`Invalid LGTM URL: ${lgtmUrl}`);
   }
 }

@@ -4,7 +4,7 @@
   "description": "CodeQL for Visual Studio Code",
   "author": "GitHub",
   "private": true,
-  "version": "1.3.3",
+  "version": "1.5.3",
   "publisher": "GitHub",
   "license": "MIT",
   "icon": "media/VS-marketplace-CodeQL-icon.png",
@@ -13,7 +13,7 @@
     "url": "https://github.com/github/vscode-codeql"
   },
   "engines": {
-    "vscode": "^1.43.0"
+    "vscode": "^1.57.0"
   },
   "categories": [
     "Programming Languages"
@@ -21,6 +21,16 @@
   "extensionDependencies": [
     "hbenl.vscode-test-explorer"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Workspace trust is required to execute commands that can contain arbitrary paths.",
+      "restrictedConfigurations": [
+        "codeQL.cli.executablePath",
+        "codeQL.runningTests.additionalTestArguments"
+      ]
+    }
+  },
   "activationEvents": [
     "onLanguage:ql",
     "onView:codeQLDatabases",
@@ -28,12 +38,14 @@
     "onView:codeQLAstViewer",
     "onView:test-explorer",
     "onCommand:codeQL.checkForUpdatesToCLI",
+    "onCommand:codeQL.authenticateToGitHub",
     "onCommand:codeQLDatabases.chooseDatabaseFolder",
     "onCommand:codeQLDatabases.chooseDatabaseArchive",
     "onCommand:codeQLDatabases.chooseDatabaseInternet",
     "onCommand:codeQLDatabases.chooseDatabaseLgtm",
     "onCommand:codeQL.setCurrentDatabase",
     "onCommand:codeQL.viewAst",
+    "onCommand:codeQL.openReferencedFile",
     "onCommand:codeQL.chooseDatabaseFolder",
     "onCommand:codeQL.chooseDatabaseArchive",
     "onCommand:codeQL.chooseDatabaseInternet",
@@ -106,22 +118,43 @@
         "path": "./out/syntaxes/dbscheme.tmLanguage.json"
       }
     ],
+    "snippets": [
+      {
+        "language": "ql",
+        "path": "./snippets.json"
+      }
+    ],
     "configuration": {
       "type": "object",
       "title": "CodeQL",
       "properties": {
         "codeQL.cli.executablePath": {
-          "scope": "machine",
+          "scope": "window",
           "type": "string",
           "default": "",
-          "description": "Path to the CodeQL executable that should be used by the CodeQL extension. The executable is named `codeql` on Linux/Mac and `codeql.exe` on Windows. This overrides all other CodeQL CLI settings."
+          "markdownDescription": "Path to the CodeQL executable that should be used by the CodeQL extension. The executable is named `codeql` on Linux/Mac and `codeql.exe` on Windows. If empty, the extension will look for a CodeQL executable on your shell PATH, or if CodeQL is not on your PATH, download and manage its own CodeQL executable."
         },
         "codeQL.runningQueries.numberOfThreads": {
           "type": "integer",
           "default": 1,
-          "minimum": 1,
+          "minimum": 0,
           "maximum": 1024,
           "description": "Number of threads for running queries."
+        },
+        "codeQL.runningQueries.saveCache": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Aggressively save intermediate results to the disk cache. This may speed up subsequent queries if they are similar. Be aware that using this option will greatly increase disk usage and initial evaluation time."
+        },
+        "codeQL.runningQueries.cacheSize": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1024,
+          "description": "Maximum size of the disk cache (in MB). Leave blank to allow the evaluator to automatically adjust the size of the disk cache based on the size of the codebase and the complexity of the queries being executed."
         },
         "codeQL.runningQueries.timeout": {
           "type": [
@@ -152,25 +185,73 @@
           "default": false,
           "description": "Enable automatically saving a modified query file when running a query."
         },
+        "codeQL.runningQueries.maxQueries": {
+          "type": "integer",
+          "default": 20,
+          "description": "Max number of simultaneous queries to run using the 'CodeQL: Run Queries' command."
+        },
+        "codeQL.runningQueries.customLogDirectory": {
+          "type": [
+            "string",
+            null
+          ],
+          "default": null,
+          "description": "Path to a directory where the CodeQL extension should store query server logs. If empty, the extension stores logs in a temporary workspace folder and deletes the contents after each run."
+        },
+        "codeQL.resultsDisplay.pageSize": {
+          "type": "integer",
+          "default": 200,
+          "description": "Max number of query results to display per page in the results view."
+        },
         "codeQL.queryHistory.format": {
           "type": "string",
-          "default": "[%t] %q on %d - %s",
-          "description": "Default string for how to label query history items. %t is the time of the query, %q is the query name, %d is the database name, and %s is a status string."
+          "default": "%q on %d - %s, %r result count [%t]",
+          "description": "Default string for how to label query history items. %t is the time of the query, %q is the query name, %d is the database name, %r is the number of results, and %s is a status string."
+        },
+        "codeQL.runningTests.additionalTestArguments": {
+          "scope": "window",
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Additional command line arguments to pass to the CLI when [running tests](https://codeql.github.com/docs/codeql-cli/manual/test-run/). This setting should be an array of strings, each containing an argument to be passed."
         },
         "codeQL.runningTests.numberOfThreads": {
           "scope": "window",
           "type": "integer",
           "default": 1,
-          "minimum": 1,
+          "minimum": 0,
           "maximum": 1024,
           "description": "Number of threads for running CodeQL tests."
+        },
+        "codeQL.telemetry.enableTelemetry": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Specifies whether to send CodeQL usage telemetry. This setting AND the global `#telemetry.enableTelemetry#` setting must be checked for telemetry to be sent to GitHub. For more information, see the [telemetry documentation](https://codeql.github.com/docs/codeql-for-visual-studio-code/about-telemetry-in-codeql-for-visual-studio-code)"
+        },
+        "codeQL.telemetry.logTelemetry": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Specifies whether or not to write telemetry events to the extension log."
         }
       }
     },
     "commands": [
       {
+        "command": "codeQL.authenticateToGitHub",
+        "title": "CodeQL: Authenticate to GitHub"
+      },
+      {
         "command": "codeQL.runQuery",
         "title": "CodeQL: Run Query"
+      },
+      {
+        "command": "codeQL.runQueryOnMultipleDatabases",
+        "title": "CodeQL: Run Query on Multiple Databases"
+      },
+      {
+        "command": "codeQL.runRemoteQuery",
+        "title": "CodeQL: Run Remote Query"
       },
       {
         "command": "codeQL.runQueries",
@@ -181,8 +262,20 @@
         "title": "CodeQL: Quick Evaluation"
       },
       {
+        "command": "codeQL.openReferencedFile",
+        "title": "CodeQL: Open Referenced File"
+      },
+      {
         "command": "codeQL.quickQuery",
         "title": "CodeQL: Quick Query"
+      },
+      {
+        "command": "codeQL.openDocumentation",
+        "title": "CodeQL: Open Documentation"
+      },
+      {
+        "command": "codeQL.copyVersion",
+        "title": "CodeQL: Copy Version Information"
       },
       {
         "command": "codeQLDatabases.chooseDatabaseFolder",
@@ -191,6 +284,10 @@
           "light": "media/light/folder-opened-plus.svg",
           "dark": "media/dark/folder-opened-plus.svg"
         }
+      },
+      {
+        "command": "codeQLDatabases.removeOrphanedDatabases",
+        "title": "Delete unused databases"
       },
       {
         "command": "codeQLDatabases.chooseDatabaseArchive",
@@ -253,6 +350,10 @@
         "title": "Show Database Directory"
       },
       {
+        "command": "codeQLDatabases.addDatabaseSource",
+        "title": "Add Database Source to Workspace"
+      },
+      {
         "command": "codeQL.chooseDatabaseFolder",
         "title": "CodeQL: Choose Database from Folder"
       },
@@ -290,15 +391,51 @@
       },
       {
         "command": "codeQLQueryHistory.openQuery",
-        "title": "Open Query"
-      },
-      {
-        "command": "codeQLQueryHistory.removeHistoryItem",
-        "title": "Remove History Item"
+        "title": "Open the query that produced these results",
+        "icon": {
+          "light": "media/light/edit.svg",
+          "dark": "media/dark/edit.svg"
+        }
       },
       {
         "command": "codeQLQueryHistory.itemClicked",
-        "title": "Query History Item"
+        "title": "Open Query Results",
+        "icon": {
+          "light": "media/light/preview.svg",
+          "dark": "media/dark/preview.svg"
+        }
+      },
+      {
+        "command": "codeQLQueryHistory.removeHistoryItem",
+        "title": "Remove History Item(s)",
+        "icon": {
+          "light": "media/light/trash.svg",
+          "dark": "media/dark/trash.svg"
+        }
+      },
+      {
+        "command": "codeQLQueryHistory.sortByName",
+        "title": "Sort by Name",
+        "icon": {
+          "light": "media/light/sort-alpha.svg",
+          "dark": "media/dark/sort-alpha.svg"
+        }
+      },
+      {
+        "command": "codeQLQueryHistory.sortByDate",
+        "title": "Sort by Query Date",
+        "icon": {
+          "light": "media/light/sort-date.svg",
+          "dark": "media/dark/sort-date.svg"
+        }
+      },
+      {
+        "command": "codeQLQueryHistory.sortByCount",
+        "title": "Sort by Results Count",
+        "icon": {
+          "light": "media/light/sort-num.svg",
+          "dark": "media/dark/sort-num.svg"
+        }
       },
       {
         "command": "codeQLQueryHistory.showQueryLog",
@@ -309,8 +446,16 @@
         "title": "Show Query Text"
       },
       {
-        "command": "codeQLQueryHistory.viewSarif",
-        "title": "View SARIF"
+        "command": "codeQLQueryHistory.viewCsvResults",
+        "title": "View Results (CSV)"
+      },
+      {
+        "command": "codeQLQueryHistory.viewSarifResults",
+        "title": "View Results (SARIF)"
+      },
+      {
+        "command": "codeQLQueryHistory.viewDil",
+        "title": "View DIL"
       },
       {
         "command": "codeQLQueryHistory.setLabel",
@@ -334,11 +479,11 @@
       },
       {
         "command": "codeQLTests.showOutputDifferences",
-        "title": "CodeQL: Show Test Output Differences"
+        "title": "Show Test Output Differences"
       },
       {
         "command": "codeQLTests.acceptOutput",
-        "title": "CodeQL: Accept Test Output"
+        "title": "Accept Test Output"
       },
       {
         "command": "codeQLAstViewer.gotoCode",
@@ -386,8 +531,38 @@
           "group": "navigation"
         },
         {
+          "command": "codeQLQueryHistory.openQuery",
+          "when": "view == codeQLQueryHistory",
+          "group": "navigation"
+        },
+        {
+          "command": "codeQLQueryHistory.itemClicked",
+          "when": "view == codeQLQueryHistory",
+          "group": "navigation"
+        },
+        {
+          "command": "codeQLQueryHistory.removeHistoryItem",
+          "when": "view == codeQLQueryHistory",
+          "group": "navigation"
+        },
+        {
+          "command": "codeQLQueryHistory.sortByName",
+          "when": "view == codeQLQueryHistory",
+          "group": "navigation"
+        },
+        {
+          "command": "codeQLQueryHistory.sortByDate",
+          "when": "view == codeQLQueryHistory",
+          "group": "navigation"
+        },
+        {
+          "command": "codeQLQueryHistory.sortByCount",
+          "when": "view == codeQLQueryHistory",
+          "group": "navigation"
+        },
+        {
           "command": "codeQLAstViewer.clear",
-          "when": "view == codeQLAstViewer && config.codeQL.experimentalAstViewer == true",
+          "when": "view == codeQLAstViewer",
           "group": "navigation"
         }
       ],
@@ -414,6 +589,11 @@
         },
         {
           "command": "codeQLDatabases.openDatabaseFolder",
+          "group": "9_qlCommands",
+          "when": "view == codeQLDatabases"
+        },
+        {
+          "command": "codeQLDatabases.addDatabaseSource",
           "group": "9_qlCommands",
           "when": "view == codeQLDatabases"
         },
@@ -448,9 +628,19 @@
           "when": "view == codeQLQueryHistory"
         },
         {
-          "command": "codeQLQueryHistory.viewSarif",
+          "command": "codeQLQueryHistory.viewCsvResults",
           "group": "9_qlCommands",
           "when": "view == codeQLQueryHistory && viewItem == interpretedResultsItem"
+        },
+        {
+          "command": "codeQLQueryHistory.viewSarifResults",
+          "group": "9_qlCommands",
+          "when": "view == codeQLQueryHistory && viewItem == interpretedResultsItem"
+        },
+        {
+          "command": "codeQLQueryHistory.viewDil",
+          "group": "9_qlCommands",
+          "when": "view == codeQLQueryHistory"
         },
         {
           "command": "codeQLTests.showOutputDifferences",
@@ -472,17 +662,35 @@
         {
           "command": "codeQL.viewAst",
           "group": "9_qlCommands",
-          "when": "resourceScheme == codeql-zip-archive && config.codeQL.experimentalAstViewer == true"
+          "when": "resourceScheme == codeql-zip-archive"
         },
         {
           "command": "codeQL.runQueries",
-          "group": "9_qlCommands"
+          "group": "9_qlCommands",
+          "when": "resourceScheme != codeql-zip-archive"
+        },
+        {
+          "command": "codeQL.openReferencedFile",
+          "group": "9_qlCommands",
+          "when": "resourceExtname == .qlref"
         }
       ],
       "commandPalette": [
         {
+          "command": "codeQL.authenticateToGitHub",
+          "when": "config.codeQL.canary"
+        },
+        {
           "command": "codeQL.runQuery",
           "when": "resourceLangId == ql && resourceExtname == .ql"
+        },
+        {
+          "command": "codeQL.runQueryOnMultipleDatabases",
+          "when": "resourceLangId == ql && resourceExtname == .ql"
+        },
+        {
+          "command": "codeQL.runRemoteQuery",
+          "when": "config.codeQL.canary && editorLangId == ql && resourceExtname == .ql"
         },
         {
           "command": "codeQL.runQueries",
@@ -491,6 +699,10 @@
         {
           "command": "codeQL.quickEval",
           "when": "editorLangId == ql"
+        },
+        {
+          "command": "codeQL.openReferencedFile",
+          "when": "resourceExtname == .qlref"
         },
         {
           "command": "codeQL.setCurrentDatabase",
@@ -513,6 +725,10 @@
           "when": "false"
         },
         {
+          "command": "codeQLDatabases.addDatabaseSource",
+          "when": "false"
+        },
+        {
           "command": "codeQLDatabases.sortByName",
           "when": "false"
         },
@@ -530,6 +746,10 @@
         },
         {
           "command": "codeQLDatabases.chooseDatabaseArchive",
+          "when": "false"
+        },
+        {
+          "command": "codeQLDatabases.removeOrphanedDatabases",
           "when": "false"
         },
         {
@@ -565,7 +785,15 @@
           "when": "false"
         },
         {
-          "command": "codeQLQueryHistory.viewSarif",
+          "command": "codeQLQueryHistory.viewCsvResults",
+          "when": "false"
+        },
+        {
+          "command": "codeQLQueryHistory.viewSarifResults",
+          "when": "false"
+        },
+        {
+          "command": "codeQLQueryHistory.viewDil",
           "when": "false"
         },
         {
@@ -577,11 +805,31 @@
           "when": "false"
         },
         {
+          "command": "codeQLQueryHistory.sortByName",
+          "when": "false"
+        },
+        {
+          "command": "codeQLQueryHistory.sortByDate",
+          "when": "false"
+        },
+        {
+          "command": "codeQLQueryHistory.sortByCount",
+          "when": "false"
+        },
+        {
           "command": "codeQLAstViewer.gotoCode",
           "when": "false"
         },
         {
           "command": "codeQLAstViewer.clear",
+          "when": "false"
+        },
+        {
+          "command": "codeQLTests.acceptOutput",
+          "when": "false"
+        },
+        {
+          "command": "codeQLTests.showOutputDifferences",
           "when": "false"
         }
       ],
@@ -591,8 +839,24 @@
           "when": "editorLangId == ql && resourceExtname == .ql"
         },
         {
+          "command": "codeQL.runQueryOnMultipleDatabases",
+          "when": "editorLangId == ql && resourceExtname == .ql"
+        },
+        {
+          "command": "codeQL.runRemoteQuery",
+          "when": "config.codeQL.canary && editorLangId == ql && resourceExtname == .ql"
+        },
+        {
+          "command": "codeQL.viewAst",
+          "when": "resourceScheme == codeql-zip-archive"
+        },
+        {
           "command": "codeQL.quickEval",
           "when": "editorLangId == ql"
+        },
+        {
+          "command": "codeQL.openReferencedFile",
+          "when": "resourceExtname == .qlref"
         }
       ]
     },
@@ -617,20 +881,22 @@
         },
         {
           "id": "codeQLAstViewer",
-          "name": "AST Viewer",
-          "when": "config.codeQL.experimentalAstViewer == true"
+          "name": "AST Viewer"
         }
       ]
     },
     "viewsWelcome": [
       {
         "view": "codeQLAstViewer",
-        "contents": "Run the 'CodeQL: View AST' command on an open source file from a Code QL database.\n[View AST](command:codeQL.viewAst)",
-        "when": "config.codeQL.experimentalAstViewer == true"
+        "contents": "Run the 'CodeQL: View AST' command on an open source file from a CodeQL database.\n[View AST](command:codeQL.viewAst)"
       },
       {
         "view": "codeQLQueryHistory",
-        "contents": "Run the 'CodeQL: Run Query' command on QL query.\n[Run Query](command:codeQL.runQuery)"
+        "contents": "Run the 'CodeQL: Run Query' command on a QL query.\n[Run Query](command:codeQL.runQuery)"
+      },
+      {
+        "view": "codeQLDatabases",
+        "contents": "Add a CodeQL database:\n[From a folder](command:codeQLDatabases.chooseDatabaseFolder)\n[From an archive](command:codeQLDatabases.chooseDatabaseArchive)\n[From a URL (as a zip file)](command:codeQLDatabases.chooseDatabaseInternet)\n[From LGTM](command:codeQLDatabases.chooseDatabaseLgtm)"
       }
     ]
   },
@@ -640,20 +906,23 @@
     "watch:extension": "tsc --watch",
     "test": "mocha --exit -r ts-node/register test/pure-tests/**/*.ts",
     "preintegration": "rm -rf ./out/vscode-tests && gulp",
-    "integration": "node ./out/vscode-tests/run-integration-tests.js",
+    "integration": "node ./out/vscode-tests/run-integration-tests.js no-workspace,minimal-workspace",
+    "cli-integration": "npm run preintegration && node ./out/vscode-tests/run-integration-tests.js cli-integration",
     "update-vscode": "node ./node_modules/vscode/bin/install",
     "format": "tsfmt -r && eslint src test --ext .ts,.tsx --fix",
     "lint": "eslint src test --ext .ts,.tsx --max-warnings=0",
     "format-staged": "lint-staged"
   },
   "dependencies": {
+    "@octokit/rest": "^18.5.6",
     "child-process-promise": "^2.2.1",
     "classnames": "~2.2.6",
-    "fs-extra": "^8.1.0",
+    "fs-extra": "^9.0.1",
     "glob-promise": "^3.4.0",
     "js-yaml": "^3.14.0",
     "minimist": "~1.2.5",
     "node-fetch": "~2.6.0",
+    "path-browserify": "^1.0.1",
     "react": "^16.8.6",
     "react-dom": "^16.8.6",
     "semver": "~7.3.2",
@@ -661,6 +930,7 @@
     "tmp-promise": "~3.0.2",
     "tree-kill": "~1.2.2",
     "unzipper": "~0.10.5",
+    "vscode-extension-telemetry": "^0.1.6",
     "vscode-jsonrpc": "^5.0.1",
     "vscode-languageclient": "^6.1.3",
     "vscode-test-adapter-api": "~1.7.0",
@@ -668,36 +938,38 @@
     "zip-a-folder": "~0.0.12"
   },
   "devDependencies": {
-    "@types/semver": "~7.2.0",
     "@types/chai": "^4.1.7",
     "@types/chai-as-promised": "~7.1.2",
     "@types/child-process-promise": "^2.2.1",
     "@types/classnames": "~2.2.9",
-    "@types/fs-extra": "^8.0.0",
+    "@types/fs-extra": "^9.0.6",
     "@types/glob": "^7.1.1",
     "@types/google-protobuf": "^3.2.7",
-    "@types/gulp": "^4.0.6",
+    "@types/gulp": "^4.0.9",
+    "@types/gulp-replace": "0.0.31",
     "@types/gulp-sourcemaps": "0.0.32",
-    "@types/js-yaml": "~3.12.2",
+    "@types/js-yaml": "^3.12.5",
     "@types/jszip": "~3.1.6",
-    "@types/mocha": "~5.2.7",
-    "@types/node": "^12.0.8",
+    "@types/mocha": "^8.2.0",
+    "@types/node": "^12.14.1",
     "@types/node-fetch": "~2.5.2",
     "@types/proxyquire": "~1.3.28",
     "@types/react": "^16.8.17",
     "@types/react-dom": "^16.8.4",
     "@types/sarif": "~2.1.2",
+    "@types/semver": "~7.2.0",
     "@types/sinon": "~7.5.2",
     "@types/sinon-chai": "~3.2.3",
     "@types/through2": "^2.0.36",
     "@types/tmp": "^0.1.0",
     "@types/unzipper": "~0.10.1",
-    "@types/vscode": "^1.43.0",
+    "@types/vscode": "^1.57.0",
     "@types/webpack": "^4.32.1",
     "@types/xml2js": "~0.4.4",
-    "@typescript-eslint/eslint-plugin": "~2.23.0",
-    "@typescript-eslint/parser": "~2.23.0",
+    "@typescript-eslint/eslint-plugin": "^4.26.0",
+    "@typescript-eslint/parser": "^4.26.0",
     "ansi-colors": "^4.1.1",
+    "applicationinsights": "^1.8.7",
     "chai": "^4.2.0",
     "chai-as-promised": "~7.1.1",
     "css-loader": "~3.1.0",
@@ -705,12 +977,13 @@
     "eslint-plugin-react": "~7.19.0",
     "glob": "^7.1.4",
     "gulp": "^4.0.2",
+    "gulp-replace": "^1.0.0",
     "gulp-sourcemaps": "^2.6.5",
     "gulp-typescript": "^5.0.1",
     "husky": "~4.2.5",
     "jsonc-parser": "^2.3.0",
     "lint-staged": "~10.2.2",
-    "mocha": "~6.2.1",
+    "mocha": "^8.2.1",
     "mocha-sinon": "~2.1.0",
     "npm-run-all": "^4.1.5",
     "prettier": "~2.0.5",
@@ -719,15 +992,15 @@
     "sinon-chai": "~3.5.0",
     "style-loader": "~0.23.1",
     "through2": "^3.0.1",
-    "ts-loader": "^5.4.5",
+    "ts-loader": "^8.1.0",
     "ts-node": "^8.3.0",
     "ts-protoc-gen": "^0.9.0",
-    "typescript": "~3.8.3",
+    "typescript": "^4.3.2",
     "typescript-formatter": "^7.2.2",
     "vsce": "^1.65.0",
     "vscode-test": "^1.4.0",
-    "webpack": "^4.38.0",
-    "webpack-cli": "^3.3.2"
+    "webpack": "^5.28.0",
+    "webpack-cli": "^4.6.0"
   },
   "husky": {
     "hooks": {
@@ -743,5 +1016,8 @@
       "tsfmt -r",
       "eslint --fix"
     ]
+  },
+  "resolutions": {
+    "glob-parent": "~6.0.0"
   }
 }

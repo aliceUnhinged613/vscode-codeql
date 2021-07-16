@@ -12,12 +12,13 @@ import {
 import { CodeQLCliServer } from '../cli';
 import { DatabaseItem } from '../databases';
 
-export async function qlpackOfDatabase(cli: CodeQLCliServer, db: DatabaseItem): Promise<string | undefined> {
-  if (db.contents === undefined)
-    return undefined;
+export async function qlpackOfDatabase(cli: CodeQLCliServer, db: DatabaseItem): Promise<string> {
+  if (db.contents === undefined) {
+    throw new Error('Database is invalid and cannot infer QLPack.');
+  }
   const datasetPath = db.contents.datasetUri.fsPath;
-  const { qlpack } = await helpers.resolveDatasetFolder(cli, datasetPath);
-  return qlpack;
+  const dbscheme = await helpers.getPrimaryDbscheme(datasetPath);
+  return await helpers.getQlPackForDbscheme(cli, dbscheme);
 }
 
 
@@ -36,8 +37,10 @@ export async function resolveQueries(cli: CodeQLCliServer, qlpack: string, keyTy
 
   const queries = await cli.resolveQueriesInSuite(suiteFile, helpers.getOnDiskWorkspaceFolders());
   if (queries.length === 0) {
-    helpers.showAndLogErrorMessage(
-      `No ${nameOfKeyType(keyType)} queries (tagged "${tagOfKeyType(keyType)}") could be found in the current library path. It might be necessary to upgrade the CodeQL libraries.`
+    void helpers.showAndLogErrorMessage(
+      `No ${nameOfKeyType(keyType)} queries (tagged "${tagOfKeyType(keyType)}") could be found in the current library path. \
+      Try upgrading the CodeQL libraries. If that doesn't work, then ${nameOfKeyType(keyType)} queries are not yet available \
+      for this language.`
     );
     throw new Error(`Couldn't find any queries tagged ${tagOfKeyType(keyType)} for qlpack ${qlpack}`);
   }

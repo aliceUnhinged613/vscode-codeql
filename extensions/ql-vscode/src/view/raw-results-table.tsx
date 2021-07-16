@@ -1,10 +1,10 @@
 import * as React from 'react';
-import { ResultTableProps, className } from './result-table-utils';
-import { RAW_RESULTS_LIMIT, RawResultsSortState } from '../interface-types';
-import { RawTableResultSet } from '../interface-types';
+import { ResultTableProps, className, emptyQueryResultsMessage } from './result-table-utils';
+import { RAW_RESULTS_LIMIT, RawResultsSortState } from '../pure/interface-types';
+import { RawTableResultSet } from '../pure/interface-types';
 import RawTableHeader from './RawTableHeader';
 import RawTableRow from './RawTableRow';
-import { ResultRow } from '../adapt';
+import { ResultRow } from '../pure/bqrs-cli-types';
 
 export type RawTableProps = ResultTableProps & {
   resultSet: RawTableResultSet;
@@ -12,7 +12,7 @@ export type RawTableProps = ResultTableProps & {
   offset: number;
 };
 
-export class RawTable extends React.Component<RawTableProps, {}> {
+export class RawTable extends React.Component<RawTableProps, Record<string, never>> {
   constructor(props: RawTableProps) {
     super(props);
   }
@@ -21,6 +21,10 @@ export class RawTable extends React.Component<RawTableProps, {}> {
     const { resultSet, databaseUri } = this.props;
 
     let dataRows = resultSet.rows;
+    if (dataRows.length === 0) {
+      return emptyQueryResultsMessage();
+    }
+
     let numTruncatedResults = 0;
     if (dataRows.length > RAW_RESULTS_LIMIT) {
       numTruncatedResults = dataRows.length - RAW_RESULTS_LIMIT;

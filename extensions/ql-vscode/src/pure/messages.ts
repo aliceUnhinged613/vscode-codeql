@@ -150,6 +150,11 @@ export interface CompilationOptions {
    * Whether to disable toString values in the results.
    */
   noComputeToString: boolean;
+  /**
+   * Whether to ensure that elements that do not have a displayString
+   * get reported anyway. Useful for universal compilation options.
+   */
+  computeDefaultStrings: boolean;
 }
 
 /**
@@ -257,7 +262,7 @@ export interface CompilationTarget {
   /**
    * Compile as a normal query
    */
-  query?: {};
+  query?: Record<string, never>;
   /**
    * Compile as a quick evaluation
    */
@@ -380,8 +385,8 @@ export namespace ResultColumnKind {
    */
   export const BOOLEAN = 3;
   /**
- * A column of type `date`
- */
+   * A column of type `date`
+   */
   export const DATE = 4;
   /**
    * A column of a non-primitive type
@@ -397,6 +402,25 @@ export interface CompileUpgradeParams {
    * The parameters for how to compile the upgrades
    */
   upgrade: UpgradeParams;
+  /**
+   * A directory to store parts of the compiled upgrade
+   */
+  upgradeTempDir: string;
+  /**
+   * Enable single file upgrades, set to true to allow
+   * using single file upgrades.
+   */
+  singleFileUpgrades: true;
+}
+
+/**
+ * Parameters for compiling an upgrade.
+ */
+export interface CompileUpgradeSequenceParams {
+  /**
+   * The sequence of upgrades to compile
+   */
+  upgradePaths: string[];
   /**
    * A directory to store parts of the compiled upgrade
    */
@@ -450,6 +474,19 @@ export interface CompileUpgradeResult {
    */
   error?: string;
 }
+
+export interface CompileUpgradeSequenceResult {
+  /**
+   * The compiled upgrades as a single file.
+   */
+  compiledUpgrade?: string;
+  /**
+   * Any errors that occurred when checking the scripts.
+   */
+  error?: string;
+}
+
+
 /**
  * A description of a upgrade process
  */
@@ -487,10 +524,13 @@ export interface UpgradeDescription {
   newSha: string;
 }
 
+
+export type CompiledUpgrades = MultiFileCompiledUpgrades | SingleFileCompiledUpgrades
+
 /**
- * A compiled upgrade.
+ * The parts shared by all compiled upgrades
  */
-export interface CompiledUpgrades {
+interface CompiledUpgradesBase {
   /**
   * The initial sha of the dbscheme to upgrade from
   */
@@ -500,13 +540,45 @@ export interface CompiledUpgrades {
    */
   newStatsPath: string;
   /**
+   * The sha of the target dataset.
+   */
+  targetSha: string;
+}
+
+
+/**
+ * A compiled upgrade.
+ * The upgrade is spread among multiple files.
+ */
+interface MultiFileCompiledUpgrades extends CompiledUpgradesBase {
+  /**
+   * The path to the new dataset dbscheme
+   */
+  newDbscheme: string;
+  /**
    * The steps in the upgrade path
    */
   scripts: CompiledUpgradeScript[];
   /**
-   * The sha of the target dataset.
+   * Will never exist in an old result
    */
-  targetSha: string;
+  compiledUpgradeFile?: never;
+}
+
+
+/**
+ * A compiled upgrade.
+ * The upgrade is in a single file.
+ */
+export interface SingleFileCompiledUpgrades extends CompiledUpgradesBase {
+  /**
+   * The steps in the upgrade path
+   */
+  descriptions: UpgradeDescription[];
+  /**
+   * A path to a file containing the upgrade
+   */
+  compiledUpgradeFile: string;
 }
 
 /**
@@ -652,6 +724,10 @@ export interface QueryToRun {
    */
   qlo: string;
   /**
+   * A uri pointing to the compiled upgrade file.
+   */
+  compiledUpgrade?: string;
+  /**
    * The path where we should save this queries results
    */
   resultsPath: string;
@@ -750,7 +826,7 @@ export interface ResultSet {
 /**
  * The type returned when the evaluation is complete
  */
-export type EvaluationComplete = {};
+export type EvaluationComplete = Record<string, never>;
 
 /**
  * The result of a single query
@@ -837,7 +913,6 @@ export interface RunUpgradeParams {
   toRun: CompiledUpgrades;
 }
 
-
 /**
  * The result of running an upgrade
  */
@@ -857,6 +932,21 @@ export interface RunUpgradeResult {
   finalSha: string;
 }
 
+export interface RegisterDatabasesParams {
+  databases: Dataset[];
+}
+
+export interface DeregisterDatabasesParams {
+  databases: Dataset[];
+}
+
+export type RegisterDatabasesResult = {
+  registeredDatabases: Dataset[];
+};
+
+export type DeregisterDatabasesResult = {
+  registeredDatabases: Dataset[];
+};
 
 /**
  * Type for any action that could have progress messages.
@@ -913,7 +1003,10 @@ export const checkUpgrade = new rpc.RequestType<WithProgressId<UpgradeParams>, C
  * Compile an upgrade script to upgrade a dataset.
  */
 export const compileUpgrade = new rpc.RequestType<WithProgressId<CompileUpgradeParams>, CompileUpgradeResult, void, void>('compilation/compileUpgrade');
-
+/**
+ * Compile an upgrade script to upgrade a dataset.
+ */
+export const compileUpgradeSequence = new rpc.RequestType<WithProgressId<CompileUpgradeSequenceParams>, CompileUpgradeSequenceResult, void, void>('compilation/compileUpgradeSequence');
 
 /**
  * Clear the cache of a dataset
@@ -933,6 +1026,20 @@ export const runQueries = new rpc.RequestType<WithProgressId<EvaluateQueriesPara
  * Run upgrades on a dataset
  */
 export const runUpgrade = new rpc.RequestType<WithProgressId<RunUpgradeParams>, RunUpgradeResult, void, void>('evaluation/runUpgrade');
+
+export const registerDatabases = new rpc.RequestType<
+  WithProgressId<RegisterDatabasesParams>,
+  RegisterDatabasesResult,
+  void,
+  void
+>('evaluation/registerDatabases');
+
+export const deregisterDatabases = new rpc.RequestType<
+  WithProgressId<DeregisterDatabasesParams>,
+  DeregisterDatabasesResult,
+  void,
+  void
+>('evaluation/deregisterDatabases');
 
 /**
  * Request returned to the client to notify completion of a query.

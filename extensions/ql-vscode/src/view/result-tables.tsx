@@ -6,18 +6,27 @@ import {
   QueryMetadata,
   ResultsPaths,
   InterpretedResultsSortState,
-  RAW_RESULTS_PAGE_SIZE,
   ResultSet,
   ALERTS_TABLE_NAME,
   SELECT_TABLE_NAME,
   getDefaultResultSetName,
-} from '../interface-types';
+  ParsedResultSets,
+  IntoResultsViewMsg,
+} from '../pure/interface-types';
 import { PathTable } from './alert-table';
 import { RawTable } from './raw-results-table';
-import { ResultTableProps, tableSelectionHeaderClassName, toggleDiagnosticsClassName, alertExtrasClassName } from './result-table-utils';
-import { ParsedResultSets } from '../adapt';
+import {
+  ResultTableProps,
+  tableHeaderClassName,
+  tableHeaderItemClassName,
+  toggleDiagnosticsClassName,
+  alertExtrasClassName,
+  openFile
+} from './result-table-utils';
 import { vscode } from './vscode-api';
 
+
+const FILE_PATH_REGEX = /^(?:.+[\\/])*(.+)$/;
 
 /**
  * Properties for the `ResultTables` component.
@@ -33,6 +42,8 @@ export interface ResultTablesProps {
   sortStates: Map<string, RawResultsSortState>;
   interpretedSortState?: InterpretedResultsSortState;
   isLoadingNewResults: boolean;
+  queryName: string;
+  queryPath: string;
 }
 
 /**
@@ -41,6 +52,7 @@ export interface ResultTablesProps {
 interface ResultTablesState {
   selectedTable: string; // name of selected result set
   selectedPage: string; // stringified selected page
+  problemsViewSelected: boolean;
 }
 
 const UPDATING_RESULTS_TEXT_CLASS_NAME = 'vscode-codeql__result-tables-updating-text';
@@ -48,7 +60,7 @@ const UPDATING_RESULTS_TEXT_CLASS_NAME = 'vscode-codeql__result-tables-updating-
 function getResultCount(resultSet: ResultSet): number {
   switch (resultSet.t) {
     case 'RawResultSet':
-      return resultSet.schema.tupleCount;
+      return resultSet.schema.rows;
     case 'SarifResultSet':
       return resultSet.numTotalResults;
   }
@@ -56,7 +68,7 @@ function getResultCount(resultSet: ResultSet): number {
 
 function renderResultCountString(resultSet: ResultSet): JSX.Element {
   const resultCount = getResultCount(resultSet);
-  return <span className="number-of-results">
+  return <span className={tableHeaderItemClassName}>
     {resultCount} {resultCount === 1 ? 'result' : 'results'}
   </span>;
 }
@@ -70,7 +82,7 @@ export class ResultTables
 
   private getResultSets(): ResultSet[] {
     const resultSets: ResultSet[] =
-      // eslint-disable-next-line @typescript-eslint/ban-ts-ignore
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore 2783
       this.props.rawResultSets.map((rs) => ({ t: 'RawResultSet', ...rs }));
 
@@ -81,7 +93,11 @@ export class ResultTables
         // unused stubs because a SarifResultSet schema isn't used the
         // same way as a RawResultSet. Probably should pull `name` field
         // out.
-        schema: { name: ALERTS_TABLE_NAME, version: 0, columns: [], tupleCount: 1 },
+        schema: {
+          name: ALERTS_TABLE_NAME,
+          rows: 1,
+          columns: []
+        },
         name: ALERTS_TABLE_NAME,
         ...this.props.interpretation,
       });
@@ -89,7 +105,7 @@ export class ResultTables
     return resultSets;
   }
 
-  private getResultSetNames(resultSets: ResultSet[]): string[] {
+  private getResultSetNames(): string[] {
     return this.props.parsedResultSets.resultSetNames.concat([ALERTS_TABLE_NAME]);
   }
 
@@ -97,7 +113,17 @@ export class ResultTables
     super(props);
     const selectedTable = props.parsedResultSets.selectedTable || getDefaultResultSet(this.getResultSets());
     const selectedPage = (props.parsedResultSets.pageNumber + 1) + '';
-    this.state = { selectedTable, selectedPage };
+    this.state = {
+      selectedTable,
+      selectedPage,
+      problemsViewSelected: false
+    };
+  }
+
+  untoggleProblemsView() {
+    this.setState({
+      problemsViewSelected: false
+    });
   }
 
   private onTableSelectionChange = (event: React.ChangeEvent<HTMLSelectElement>): void => {
@@ -111,31 +137,44 @@ export class ResultTables
 
   private alertTableExtras(): JSX.Element | undefined {
     const { database, resultsPath, metadata, origResultsPaths } = this.props;
+    const handleCheckboxChanged = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.checked === this.state.problemsViewSelected) {
+        // no change
+        return;
+      }
+      this.setState({
+        problemsViewSelected: e.target.checked
+      });
+      if (resultsPath !== undefined) {
+        vscode.postMessage({
+          t: 'toggleDiagnostics',
+          origResultsPaths: origResultsPaths,
+          databaseUri: database.databaseUri,
+          visible: e.target.checked,
+          metadata: metadata
+        });
+      }
+    };
 
-    const displayProblemsAsAlertsToggle =
-      <div className={toggleDiagnosticsClassName}>
-        <input type="checkbox" id="toggle-diagnostics" name="toggle-diagnostics" onChange={(e) => {
-          if (resultsPath !== undefined) {
-            vscode.postMessage({
-              t: 'toggleDiagnostics',
-              origResultsPaths: origResultsPaths,
-              databaseUri: database.databaseUri,
-              visible: e.target.checked,
-              metadata: metadata
-            });
-          }
-        }} />
-        <label htmlFor="toggle-diagnostics">Show results in Problems view</label>
-      </div>;
-
-    return <div className={alertExtrasClassName}>
-      {displayProblemsAsAlertsToggle}
-    </div>;
+    return (
+      <div className={alertExtrasClassName}>
+        <div className={toggleDiagnosticsClassName}>
+          <input
+            type="checkbox"
+            id="toggle-diagnostics"
+            name="toggle-diagnostics"
+            onChange={handleCheckboxChanged}
+            checked={this.state.problemsViewSelected}
+          />
+          <label htmlFor="toggle-diagnostics">Show results in Problems view</label>
+        </div>
+      </div>
+    );
   }
 
   getOffset(): number {
     const { parsedResultSets } = this.props;
-    return parsedResultSets.pageNumber * RAW_RESULTS_PAGE_SIZE;
+    return parsedResultSets.pageNumber * parsedResultSets.pageSize;
   }
 
   renderPageButtons(): JSX.Element {
@@ -180,32 +219,50 @@ export class ResultTables
       });
     };
 
-    return <span className="vscode-codeql__table-selection-header">
-      <button onClick={prevPage} >&#xab;</button>
-      <input
-        type="number"
-        size={3}
-        value={this.state.selectedPage}
-        onChange={onChange}
-        onBlur={e => choosePage(e.target.value)}
-        onKeyDown={e => {
-          if (e.keyCode === 13) {
-            choosePage((e.target as HTMLInputElement).value);
-          }
-        }
-        }
-      />
-      <span>
-        / {numPages}
+    const openQuery = () => {
+      openFile(this.props.queryPath);
+    };
+    const fileName = FILE_PATH_REGEX.exec(this.props.queryPath)?.[1] || 'query';
+
+    return (
+      <span className="vscode-codeql__table-selection-pagination">
+        <button onClick={prevPage} >&#xab;</button>
+        <input
+          type="number"
+          size={3}
+          value={this.state.selectedPage}
+          min="1"
+          max={numPages}
+          onChange={onChange}
+          onBlur={e => choosePage(e.target.value)}
+          onKeyDown={e => {
+            if (e.keyCode === 13) {
+              choosePage((e.target as HTMLInputElement).value);
+            }
+          }}
+        />
+        <span>
+          /&nbsp;{numPages}
+        </span>
+        <button value=">" onClick={nextPage} >&#xbb;</button>
+        <div className={tableHeaderItemClassName}>
+          {this.props.queryName}
+        </div>
+        <div className={tableHeaderItemClassName}>
+          <a
+            href="#"
+            onClick={openQuery}
+            className="vscode-codeql__result-table-location-link"
+          >Open {fileName}</a>
+        </div>
       </span>
-      <button value=">" onClick={nextPage} >&#xbb;</button>
-    </span>;
+    );
   }
 
   render(): React.ReactNode {
     const { selectedTable } = this.state;
     const resultSets = this.getResultSets();
-    const resultSetNames = this.getResultSetNames(resultSets);
+    const resultSetNames = this.getResultSetNames();
 
     const resultSet = resultSets.find(resultSet => resultSet.schema.name == selectedTable);
     const nonemptyRawResults = resultSets.some(resultSet => resultSet.t == 'RawResultSet' && resultSet.rows.length > 0);
@@ -213,36 +270,73 @@ export class ResultTables
 
     const resultSetOptions =
       resultSetNames.map(name => <option key={name} value={name}>{name}</option>);
-
-    return <div>
-      {this.renderPageButtons()}
-      <div className={tableSelectionHeaderClassName}>
-        <select value={selectedTable} onChange={this.onTableSelectionChange}>
-          {resultSetOptions}
-        </select>
-        {numberOfResults}
-        {selectedTable === ALERTS_TABLE_NAME ? this.alertTableExtras() : undefined}
+    return (
+      <div>
+        {this.renderPageButtons()}
+        <div className={tableHeaderClassName}>
+        </div>
+        <div className={tableHeaderClassName}>
+          <select value={selectedTable} onChange={this.onTableSelectionChange}>
+            {resultSetOptions}
+          </select>
+          {numberOfResults}
+          {selectedTable === ALERTS_TABLE_NAME ? this.alertTableExtras() : undefined}
+          {
+            this.props.isLoadingNewResults ?
+              <span className={UPDATING_RESULTS_TEXT_CLASS_NAME}>Updating results…</span>
+              : null
+          }
+        </div>
         {
-          this.props.isLoadingNewResults ?
-            <span className={UPDATING_RESULTS_TEXT_CLASS_NAME}>Updating results…</span>
-            : null
+          resultSet &&
+          <ResultTable key={resultSet.schema.name} resultSet={resultSet}
+            databaseUri={this.props.database.databaseUri}
+            resultsPath={this.props.resultsPath}
+            sortState={this.props.sortStates.get(resultSet.schema.name)}
+            nonemptyRawResults={nonemptyRawResults}
+            showRawResults={() => { this.setState({ selectedTable: SELECT_TABLE_NAME }); }}
+            offset={this.getOffset()} />
         }
       </div>
-      {
-        resultSet &&
-        <ResultTable key={resultSet.schema.name} resultSet={resultSet}
-          databaseUri={this.props.database.databaseUri}
-          resultsPath={this.props.resultsPath}
-          sortState={this.props.sortStates.get(resultSet.schema.name)}
-          nonemptyRawResults={nonemptyRawResults}
-          showRawResults={() => { this.setState({ selectedTable: SELECT_TABLE_NAME }); }}
-          offset={this.getOffset()} />
-      }
-    </div>;
+    );
+  }
+
+  handleMessage(msg: IntoResultsViewMsg): void {
+    switch (msg.t) {
+      case 'untoggleShowProblems':
+        this.setState({
+          problemsViewSelected: false
+        });
+        break;
+
+      default:
+      // noop
+    }
+  }
+
+  // TODO: Duplicated from results.tsx consider a way to
+  // avoid this duplication
+  componentDidMount(): void {
+    this.vscodeMessageHandler = this.vscodeMessageHandler.bind(this);
+    window.addEventListener('message', this.vscodeMessageHandler);
+  }
+
+  componentWillUnmount(): void {
+    if (this.vscodeMessageHandler) {
+      window.removeEventListener('message', this.vscodeMessageHandler);
+    }
+  }
+
+  private vscodeMessageHandler(evt: MessageEvent) {
+    // sanitize origin
+    const origin = evt.origin.replace(/\n|\r/g, '');
+    evt.origin === window.origin
+      ? this.handleMessage(evt.data as IntoResultsViewMsg)
+      : console.error(`Invalid event origin ${origin}`);
   }
 }
 
-class ResultTable extends React.Component<ResultTableProps, {}> {
+class ResultTable extends React.Component<ResultTableProps, Record<string, never>> {
 
   constructor(props: ResultTableProps) {
     super(props);

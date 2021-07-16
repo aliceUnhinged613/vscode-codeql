@@ -67,18 +67,6 @@ export interface LineColumnLocation {
   startColumn: number;
   endLine: number;
   endColumn: number;
-  charOffset: never;
-  charLength: never;
-}
-
-export interface OffsetLengthLocation {
-  uri: string;
-  startLine: never;
-  startColumn: never;
-  endLine: never;
-  endColumn: never;
-  charOffset: number;
-  charLength: number;
 }
 
 export interface WholeFileLocation {
@@ -87,14 +75,33 @@ export interface WholeFileLocation {
   startColumn: never;
   endLine: never;
   endColumn: never;
-  charOffset: never;
-  charLength: never;
 }
 
-export type UrlValue = LineColumnLocation | OffsetLengthLocation | WholeFileLocation | string;
+export type ResolvableLocationValue = WholeFileLocation | LineColumnLocation;
 
+export type UrlValue = ResolvableLocationValue  | string;
 
 export type ColumnValue = EntityValue | number | string | boolean;
+
+export type ResultRow = ColumnValue[];
+
+export interface RawResultSet {
+  readonly schema: ResultSetSchema;
+  readonly rows: readonly ResultRow[];
+}
+
+// TODO: This function is not necessary. It generates a tuple that is slightly easier
+// to handle than the ResultSetSchema and DecodedBqrsChunk. But perhaps it is unnecessary
+// boilerplate.
+export function transformBqrsResultSet(
+  schema: ResultSetSchema,
+  page: DecodedBqrsChunk
+): RawResultSet {
+  return {
+    schema,
+    rows: Array.from(page.tuples),
+  };
+}
 
 export interface DecodedBqrsChunk {
   tuples: ColumnValue[][];
