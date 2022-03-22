@@ -652,7 +652,7 @@
     "fs-extra": "^8.1.0",
     "glob-promise": "^3.4.0",
     "js-yaml": "^3.14.0",
-    "minimist": "~1.2.5",
+    "minimist": "~1.2.6",
     "node-fetch": "~2.6.0",
     "react": "^16.8.6",
     "react-dom": "^16.8.6",
