@@ -657,15 +657,15 @@
     "react": "^16.8.6",
     "react-dom": "^16.8.6",
     "semver": "~7.3.2",
-    "tmp": "^0.1.0",
+    "tmp": "^0.2.2",
     "tmp-promise": "~3.0.2",
     "tree-kill": "~1.2.2",
-    "unzipper": "~0.10.5",
+    "unzipper": "~0.12.1",
     "vscode-jsonrpc": "^5.0.1",
     "vscode-languageclient": "^6.1.3",
     "vscode-test-adapter-api": "~1.7.0",
     "vscode-test-adapter-util": "~0.7.0",
-    "zip-a-folder": "~0.0.12"
+    "zip-a-folder": "~3.1.7"
   },
   "devDependencies": {
     "@types/semver": "~7.2.0",
