@@ -4,6 +4,7 @@
 # Generated files
 /dist/
 out/
+build/
 server/
 node_modules/
 gen/
@@ -15,7 +16,13 @@ artifacts/
 # Visual Studio workspace state
 .vs/
 
-# Rush files
-/common/temp/**
-package-deps.json
-**/.rush/temp
+# CodeQL metadata
+.cache/
+.codeql/
+
+# E2E Reports
+**/playwright-report/**
+**/test-results/**
+
+# Storybook artifacts
+**/storybook-static/**

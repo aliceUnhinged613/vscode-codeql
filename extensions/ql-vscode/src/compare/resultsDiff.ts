@@ -1,5 +1,5 @@
-import { RawResultSet } from '../adapt';
-import { QueryCompareResult } from '../interface-types';
+import type { RawQueryCompareResult } from "../common/interface-types";
+import type { RawResultSet } from "../common/raw-result-types";
 
 /**
  * Compare the rows of two queries. Use deep equality to determine if
@@ -18,25 +18,18 @@ import { QueryCompareResult } from '../interface-types';
  *  1. number of columns do not match
  *  2. If either query is empty
  *  3. If the queries are 100% disjoint
+ *
+ * @deprecated This function is only used when the `bqrs diff` command does not
+ * support `--result-sets`. It should be removed when all supported CLI versions
+ * support this option.
  */
 export default function resultsDiff(
   fromResults: RawResultSet,
-  toResults: RawResultSet
-): QueryCompareResult {
-
-  if (fromResults.schema.columns.length !== toResults.schema.columns.length) {
-    throw new Error('CodeQL Compare: Columns do not match.');
-  }
-
-  if (!fromResults.rows.length) {
-    throw new Error('CodeQL Compare: Source query has no results.');
-  }
-
-  if (!toResults.rows.length) {
-    throw new Error('CodeQL Compare: Target query has no results.');
-  }
-
-  const results = {
+  toResults: RawResultSet,
+): RawQueryCompareResult {
+  const results: RawQueryCompareResult = {
+    kind: "raw",
+    columns: fromResults.columns,
     from: arrayDiff(fromResults.rows, toResults.rows),
     to: arrayDiff(toResults.rows, fromResults.rows),
   };
@@ -45,7 +38,7 @@ export default function resultsDiff(
     fromResults.rows.length === results.from.length &&
     toResults.rows.length === results.to.length
   ) {
-    throw new Error('CodeQL Compare: No overlap between the selected queries.');
+    throw new Error("CodeQL Compare: No overlap between the selected queries.");
   }
 
   return results;

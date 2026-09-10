@@ -1,0 +1,46 @@
+import { resolve } from "path";
+import type { Extension } from "vscode";
+import { extensions, workspace } from "vscode";
+import { run } from "./local-queries/determining-selected-query-test";
+
+describe("launching with a minimal workspace", () => {
+  const ext = extensions.getExtension("GitHub.vscode-codeql");
+  it("should install the extension", () => {
+    expect(ext).toBeDefined();
+  });
+
+  // Note, this test will only pass in pristine workspaces. This means that when run locally and you
+  // reuse an existing workspace that starts with an open ql file, this test will fail. There is
+  // no need to make any changes since this will still pass on CI.
+  it("should not activate the extension at first", () => {
+    expect(ext!.isActive).toEqual(false);
+  });
+
+  it("should activate the extension when a .ql file is opened", async () => {
+    const folders = workspace.workspaceFolders;
+    expect(folders?.length).toEqual(1);
+    const folderPath = folders![0].uri.fsPath;
+    const documentPath = resolve(folderPath, "query.ql");
+    const document = await workspace.openTextDocument(documentPath);
+    expect(document.languageId).toEqual("ql");
+    // Wait for the extension to activate, polling with a timeout.
+    await waitForActivation(ext!, 90_000);
+    expect(ext!.isActive).toBeTruthy();
+  }, 120_000);
+
+  async function waitForActivation(
+    extension: Extension<any>,
+    timeoutMs: number,
+  ): Promise<void> {
+    const pollIntervalMs = 100;
+    const maxAttempts = Math.ceil(timeoutMs / pollIntervalMs);
+    for (let i = 0; i < maxAttempts; i++) {
+      if (extension.isActive) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+  }
+});
+
+run();

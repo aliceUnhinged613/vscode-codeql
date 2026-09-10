@@ -2,7 +2,7 @@
 
 [fork]: https://github.com/github/vscode-codeql/fork
 [pr]: https://github.com/github/vscode-codeql/compare
-[style]: https://primer.style
+[style]: https://github.com/microsoft/vscode-webview-ui-toolkit
 [code-of-conduct]: CODE_OF_CONDUCT.md
 
 Hi there! We're thrilled that you'd like to contribute to this project. Your help is essential for keeping it great.
@@ -22,15 +22,19 @@ Please note that this project is released with a [Contributor Code of Conduct][c
 
 Here are a few things you can do that will increase the likelihood of your pull request being accepted:
 
-* Follow the [style guide][style].
-* Write tests. Tests that don't require the VS Code API are located [here](extensions/ql-vscode/test). Integration tests that do require the VS Code API are located [here](extensions/ql-vscode/src/vscode-tests).
-* Keep your change as focused as possible. If there are multiple changes you would like to make that are not dependent upon each other, consider submitting them as separate pull requests.
-* Write a [good commit message](http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html).
+- Follow the [style guide][style].
+- Write tests:
+  - [Tests that don't require the VS Code API are located here](extensions/ql-vscode/test).
+  - [Integration tests that do require the VS Code API are located here](extensions/ql-vscode/src/vscode-tests).
+- Keep your change as focused as possible. If there are multiple changes you would like to make that are not dependent upon each other, consider submitting them as separate pull requests.
+- Write a [good commit message](https://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html).
+- Update the [changelog](https://github.com/github/vscode-codeql/blob/main/extensions/ql-vscode/CHANGELOG.md) if you are making user-facing changes.
 
 ## Setting up a local build
 
-Make sure you have a fairly recent version of vscode (>1.32) and are using nodejs
-version >=v10.13.0. (Tested on v10.15.1 and v10.16.0).
+Make sure you have installed recent versions of vscode, node, and npm. Check the `engines` block in [`package.json`](https://github.com/github/vscode-codeql/blob/main/extensions/ql-vscode/package.json) file for compatible versions. Earlier versions may work, but we no longer test against them.
+
+To automatically switch to the correct version of node, we recommend using [nvm](https://github.com/nvm-sh/nvm), which will pick-up the node version from `.nvmrc`.
 
 ### Installing all packages
 
@@ -46,9 +50,17 @@ From the command line, go to the directory `extensions/ql-vscode` and run
 
 ```shell
 npm run build
+npm run watch
 ```
 
-Alternatively, you can build the extension within VS Code via `Terminal > Run Build Task...` (or `Ctrl+Shift+B` with the default key bindings).
+Alternatively, you can build the extension within VS Code via `Terminal > Run Build Task...` (or `Ctrl+Shift+B` with the default key bindings). And you can run the watch command via `Terminal > Run Task` and then select `npm watch` from the menu.
+
+Before running any of the launch commands, be sure to have run the `build` command to ensure that the JavaScript is compiled and the resources are copied to the proper location.
+
+We recommend that you keep `npm run watch` running in the background and you only need to re-run `npm run build` in the following situations:
+
+1. on first checkout
+2. whenever any of the non-TypeScript resources have changed
 
 ### Installing the extension
 
@@ -66,42 +78,28 @@ $ vscode/scripts/code-cli.sh --install-extension dist/vscode-codeql-*.vsix # if 
 
 ### Debugging
 
-You can use VS Code to debug the extension without explicitly installing it. Just open this directory as a workspace in VS Code, and hit `F5` to start a debugging session.
+You can use VS Code to debug the extension without explicitly installing it. Just open this repository's root directory as a workspace in VS Code, and hit `F5` to start a debugging session.
 
-### Running the unit/integration tests
+### Storybook
 
-Ensure the `CODEQL_PATH` environment variable is set to point to the `codeql` cli executable.
-
-Outside of vscode, run:
+You can use [Storybook](https://storybook.js.org/) to preview React components outside VSCode. Inside the `extensions/ql-vscode` directory, run:
 
 ```shell
-npm run test && npm run integration
+npm run storybook
 ```
 
-Alternatively, you can run the tests inside of vscode. There are several vscode launch configurations defined that run the unit and integration tests. They can all be found in the debug view.
+Your browser should automatically open to the Storybook UI. Stories live in the `src/stories` directory.
 
-## Releasing (write access required)
+Alternatively, you can start Storybook inside of VSCode. There is a VSCode launch configuration for starting Storybook. It can be found in the debug view.
 
-1. Double-check the `CHANGELOG.md` contains all desired change comments
-   and has the version to be released with date at the top.
-1. Double-check that the extension `package.json` has the version you intend to release.
-   If you are doing a patch release (as opposed to minor or major version) this should already
-   be correct.
-1. Trigger a release build on Actions by adding a new tag on branch `main` of the format `vxx.xx.xx`
-1. Monitor the status of the release build in the `Release` workflow in the Actions tab.
-1. Download the VSIX from the draft GitHub release at the top of [the releases page](https://github.com/github/vscode-codeql/releases) that is created when the release build finishes.
-1. Optionally unzip the `.vsix` and inspect its `package.json` to make sure the version is what you expect,
-   or look at the source if there's any doubt the right code is being shipped.
-1. Log into the [Visual Studio Marketplace](https://marketplace.visualstudio.com/manage/publishers/github).
-1. Click the `...` menu in the CodeQL row and click **Update**.
-1. Drag the `.vsix` file you downloaded from the GitHub release into the Marketplace and click **Upload**.
-1. Go to the draft GitHub release, click 'Edit', add some summary description, and publish it.
-1. Confirm the new release is marked as the latest release at <https://github.com/github/vscode-codeql/releases>.
-1. If documentation changes need to be published, notify documentation team that release has been made.
-1. Review and merge the version bump PR that is automatically created by Actions.
+More information about Storybook can be found inside the **Overview** page once you have launched Storybook.
+
+### Testing
+
+[Information about testing can be found here](./docs/testing.md).
 
 ## Resources
 
-* [How to Contribute to Open Source](https://opensource.guide/how-to-contribute/)
-* [Using Pull Requests](https://help.github.com/articles/about-pull-requests/)
-* [GitHub Help](https://help.github.com)
+- [How to Contribute to Open Source](https://opensource.guide/how-to-contribute/)
+- [Using Pull Requests](https://help.github.com/articles/about-pull-requests/)
+- [GitHub Help](https://help.github.com)

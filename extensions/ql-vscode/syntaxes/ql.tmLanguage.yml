@@ -99,6 +99,12 @@ repository:
   comment-start:
     match: '// | /\*'
 
+  # A pattern that can start a run of whitespace or a comment.
+  # Commonly used as a negative lookahead in the `end` regex of a nonterminal, when searching for
+  # tokens that can't start a child of that nonterminal.
+  whitespace-or-comment-start:
+    match: '\s | $ | (?#comment-start)'
+
   # All tokens that can appear in any context.
   non-context-sensitive:
     patterns:
@@ -113,7 +119,7 @@ repository:
     name: keyword.operator.relational.ql
   
   comparison-operator:
-    match: '=|\!-'
+    match: '=|\!\='
     name: keyword.operator.comparison.ql
   
   arithmetic-operator:
@@ -164,6 +170,14 @@ repository:
     match: '\]'
     name: punctuation.squarebracket.close.ql
 
+  open-angle:
+    match: '<'
+    name: punctuation.anglebracket.open.ql
+
+  close-angle:
+    match: '>'
+    name: punctuation.anglebracket.close.ql
+
   operator-or-punctuation:
     patterns:
     - include: '#relational-operator'
@@ -180,6 +194,8 @@ repository:
     - include: '#close-brace'
     - include: '#open-bracket'
     - include: '#close-bracket'
+    - include: '#open-angle'
+    - include: '#close-angle'
 
 # Keywords
   dont-care:
@@ -502,7 +518,12 @@ repository:
     match:
       keyword: 'abstract'
     name: storage.modifier.abstract.ql
-  
+
+  additional:
+    match:
+      keyword: 'additional'
+    name: storage.modifier.additional.ql
+
   bindingset:
     match:
       keyword: 'bindingset'
@@ -513,11 +534,16 @@ repository:
       keyword: 'cached'
     name: storage.modifier.cached.ql
   
+  default:
+    match:
+      keyword: 'default'
+    name: storage.modifier.default.ql
+
   deprecated:
     match:
       keyword: 'deprecated'
     name: storage.modifier.deprecated.ql
-    
+
   external:
     match:
       keyword: 'external'
@@ -558,6 +584,11 @@ repository:
       keyword: 'query'
     name: storage.modifier.query.ql
 
+  signature:
+    match:
+      keyword: 'signature'
+    name: storage.modifier.signature.ql
+
   transient:
     match:
       keyword: 'transient'
@@ -566,8 +597,10 @@ repository:
   annotation-keyword:
     patterns:
     - include: '#abstract'
+    - include: '#additional'
     - include: '#bindingset'
     - include: '#cached'
+    - include: '#default'
     - include: '#deprecated'
     - include: '#external'
     - include: '#final'
@@ -577,7 +610,13 @@ repository:
     - include: '#pragma'
     - include: '#private'
     - include: '#query'
+    - include: '#signature'
     - include: '#transient'
+
+  implements:
+    match:
+      keyword: 'implements'
+    name: keyword.other.implements.ql
 
   # A QL comment, regardless of form.
   comment:
@@ -610,24 +649,48 @@ repository:
     - include: '#import-directive'
     - include: '#import-as-clause'
     - include: '#module-declaration'
+    - include: '#newtype-declaration'
+    # See the comment on newtype-declaration for why we include these next three nonterminals at the
+    # module-member level instead of as part of the newtype-declaration.
+    - include: '#newtype-branch-name-with-prefix'
+    - include: '#predicate-parameter-list'
+    - include: '#predicate-body'
     - include: '#class-declaration'
     - include: '#select-clause'
     - include: '#predicate-or-field-declaration'
     - include: '#non-context-sensitive'
     - include: '#annotation'
 
+  # The argument list of an instantiation, enclosed in angle brackets.
+  instantiation-args:
+    beginPattern: '#open-angle'
+    endPattern: '#close-angle'
+    name: meta.type.parameters.ql
+    patterns:
+    # Include `#instantiation-args` first so that `#open-angle` and `#close-angle` take precedence
+    # over `#relational-operator`.
+    - include: '#instantiation-args'
+    - include: '#non-context-sensitive'
+    - match: '(?#simple-id)'
+      name: entity.name.type.namespace.ql
+
   # An `import` directive. Note that we parse the optional `as` clause as a separate top-level
   # directive, because otherwise it's too hard to figure out where the `import` directive ends.
   import-directive:
     beginPattern: '#import'
-    # Ends with a simple-id that is not followed by a `.` or a `::`. This does not handle comments or
-    # line breaks between the simple-id and the `.` or `::`. 
-    end: '(?#simple-id) (?!\s*(\.|\:\:))'
-    endCaptures:
-      '0':
-        name: entity.name.type.namespace.ql
+    # TextMate makes it tricky to tell whether an identifier that we encounter is part of the
+    # `import` directive or whether it's the first token of the next module-level declaration.
+    # To find the end of the import directive, we'll look for a zero-width match where the previous
+    # token is either an identifier (other than `import`) or a `>`, and the next token is not a `.`,
+    # `<`, `,`, or `::`. This works for nearly all real-world `import` directives, but it will end the
+    # `import` directive too early if there is a comment or line break between two components of the
+    # module expression.
+    end: '(?<!\bimport)(?<=(?:\>)|[A-Za-z0-9_]) (?!\s*(\.|\:\:|\,|(?#open-angle)))'
     name: meta.block.import-directive.ql
     patterns:
+    # Include `#instantiation-args` first so that `#open-angle` and `#close-angle` take precedence
+    # over `#relational-operator`.
+    - include: '#instantiation-args'
     - include: '#non-context-sensitive'
     - match: '(?#simple-id)'
       name: entity.name.type.namespace.ql
@@ -656,6 +719,18 @@ repository:
     - match: '(?#simple-id)'
       name: entity.name.type.namespace.ql
 
+  # The `implements` clause of a module definition.
+  implements-clause:
+    beginPattern: '#implements'
+    # Ends at the first `{`.
+    # REVIEW: This could be any token not allowed in a type.
+    end: '(?= \{ )'
+    name: meta.block.implements-clause.ql
+    patterns:
+    - include: '#non-context-sensitive'
+    - match: '(?#simple-id)|(?#at-lower-id)'
+      name: entity.name.type.ql
+
   # A `module` declaration, whether a module definition or an alias declaration.
   module-declaration:
     # Starts with the `module` keyword.
@@ -665,6 +740,7 @@ repository:
     name: meta.block.module-declaration.ql
     patterns:
     - include: '#module-body'
+    - include: '#implements-clause'
     - include: '#non-context-sensitive'
       # Any simple-id within a module head is part of a module name.
     - match: '(?#simple-id)'
@@ -781,7 +857,7 @@ repository:
   bindingset-annotation:
     beginPattern: '#bindingset'
     # Ends after the next `]`, or when we encounter something other than a `[`.
-    end: '(?! \s | (?#comment-start) | \[ ) |
+    end: '(?! (?#whitespace-or-comment-start) | \[ ) |
           (?<=\])'
     name: meta.block.bindingset-annotation.ql
     patterns:
@@ -802,7 +878,7 @@ repository:
   language-annotation:
     beginPattern: '#language'
     # Ends after the next `]`, or when we encounter something other than a `[`.
-    end: '(?! \s | (?#comment-start) | \[ ) |
+    end: '(?! (?#whitespace-or-comment-start) | \[ ) |
           (?<=\])'
     name: meta.block.language-annotation.ql
     patterns:
@@ -824,7 +900,7 @@ repository:
   pragma-annotation:
     beginPattern: '#pragma'
     # Ends after the next `]`, or when we encounter something other than a `[`.
-    end: '(?! \s | (?#comment-start) | \[ ) |
+    end: '(?! (?#whitespace-or-comment-start) | \[ ) |
           (?<=\])'
     name: meta.block.pragma-annotation.ql
     patterns:
@@ -841,34 +917,53 @@ repository:
       name: storage.modifier.ql
 
   # The declaration of an IPA type.
+  # This only includes the `newtype` keyword and the identifier for the IPA type itself. The
+  # branches of the IPA type are modeled as separate nonterminals contained directly in the module
+  # body. This is kind of hacky, but without it, we don't seem to have a way to get TextMate to
+  # handle this:
+  # ```ql
+  # newtype TRoot =
+  #   TBranch1(int x) {
+  #     x = 5
+  #   } or
+  #   TBranch2()  // No body
+  #
+  # TOther getOther() { any() }
+  # ```
+  # If the branches are within the newtype declaration node, it's very hard to get the upper-id for
+  # the name of the IPA type to be included in the newtype declaration node, without also including
+  # the `TOther` upper-id in the declaration node.
   newtype-declaration:
     beginPattern: '#newtype'
-    # Ends when we see something other than one of:
-    # - An upper-id (branch name)
-    # - A comment
-    # - Whitespace
-    # - `=`
-    # - `(`
-    end: '(?! \s | (?#upper-id) | (?#comment-start) | \= | \( )'
-    name: meta.block.newtype.ql
-    patterns:
-    - include: '#non-context-sensitive'
-    - include: '#newtype-branch'
-
-  # The branch of an IPA type.
-  newtype-branch:
-    begin: '(?#upper-id)'
-    beginCaptures:
+    # We're expecting a newtype-declaration-without-keyword immediately after the `newtype` keyword,
+    # so end if we see anything other than the upper-id that starts it, or whitespace, or a comment.
+    # An upper-id can't start anything else at module scope, so once we see the rest of this
+    # newtype-declaration, whatever comes next should end this block.
+    end: '(?#upper-id)'
+    endCaptures:
       '0':
         name: entity.name.type.ql
-    # Ends after a `}`, or when we encounter something other than a `{`.
-    end: '(?<=\}) | (?! \s | (?#comment-start) | \{ )'
-    name: meta.block.newtype-branch.ql
+    name: meta.block.newtype-declaration.ql
     patterns:
-    - include: '#predicate-body'
     - include: '#non-context-sensitive'
-    - match: '(?#upper-id)'
-      name: entity.name.type.ql
+
+  # A branch of an IPA type, including just the `=` or `or` prefix and the name of the branch.
+  # The parameter list and body are separate nonterminals contained directly within the module body.
+  # See the comment for newtype-declaration for why.
+  newtype-branch-name-with-prefix:
+    begin: '\= | (?#or)'
+    beginCaptures:
+      '0':
+        patterns:
+        - include: '#or'
+        - include: '#comparison-operator'
+    end: '(?#upper-id)'
+    endCaptures:
+      '0':
+        name: entity.name.type.ql
+    name: meta.block.newtype-branch-name-with-prefix.ql
+    patterns:
+    - include: '#non-context-sensitive'
 
   # The declaration of a class, include an alias.
   class-declaration:
@@ -970,7 +1065,7 @@ repository:
     beginPattern: '#as'
     # Ends after the first identifier we encounter.
     # REVIEW: Make similar to import-as-clause.
-    end: '(?<=(?#id-character)(?#end-of-id))'
+    end: '(?<=(?#id-character))(?#end-of-id)'
     match: meta.block.select-as-clause.ql
     patterns:
     - include: '#non-context-sensitive'

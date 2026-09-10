@@ -1,0 +1,44 @@
+// These are all the packages that DO need to be transformed. All other packages will be ignored.
+// These packages all use ES modules, so need to be transformed
+const transformScopes = [
+  "@faker-js",
+  "@microsoft",
+  "@octokit",
+  "@vscode-elements",
+  "@lit",
+  "@lit-labs",
+  "@hpcc-js",
+  "@open-draft",
+];
+const transformPackages = [
+  "before-after-hook",
+  "chokidar",
+  "d3",
+  "data-uri-to-buffer",
+  "delaunator",
+  "exenv-es6",
+  "fetch-blob",
+  "formdata-polyfill",
+  "internmap",
+  "lit",
+  "nanoid",
+  "p-queue",
+  "p-timeout",
+  "readdirp",
+  "rettime",
+  "robust-predicates",
+  "stream-chain",
+  "stream-json",
+  "universal-user-agent",
+  "until-async",
+];
+const transformWildcards = ["d3-(.*)", "lit-(.*)"];
+const transformPatterns = [
+  ...transformScopes.map((scope) => `${scope}/.+`),
+  ...transformPackages,
+  ...transformWildcards,
+];
+
+export const transformIgnorePatterns = [
+  `node_modules/(?!(?:${transformPatterns.join("|")})/.*)`,
+];

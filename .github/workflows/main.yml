@@ -1,5 +1,14 @@
 name: Build Extension
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -10,23 +19,27 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-node@v1
+      - uses: actions/setup-node@v7
         with:
-          node-version: '10.18.1'
+          node-version-file: extensions/ql-vscode/.nvmrc
+          cache: 'npm'
+          cache-dependency-path: extensions/ql-vscode/package-lock.json
 
       - name: Install dependencies
+        working-directory: extensions/ql-vscode
         run: |
-          cd extensions/ql-vscode
-          npm install
+          npm ci
         shell: bash
 
       - name: Build
+        working-directory: extensions/ql-vscode
+        env:
+          APP_INSIGHTS_KEY: '${{ secrets.APP_INSIGHTS_KEY }}'
         run: |
-          cd extensions/ql-vscode
           npm run build
         shell: bash
 
@@ -37,11 +50,153 @@ jobs:
           cp dist/*.vsix artifacts
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@master
+        uses: actions/upload-artifact@v7
         if: matrix.os == 'ubuntu-latest'
         with:
           name: vscode-codeql-extension
           path: artifacts
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: extensions/ql-vscode/.nvmrc
+          cache: 'npm'
+          cache-dependency-path: extensions/ql-vscode/package-lock.json
+
+      - name: Install dependencies
+        working-directory: extensions/ql-vscode
+        run: |
+          npm ci
+        shell: bash
+
+      - name: Check types
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run check-types
+
+      - name: Lint Markdown
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run lint:markdown
+
+      - name: Lint scenarios
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run lint:scenarios
+
+      - name: Find deadcode
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run find-deadcode
+
+      - name: Lint
+        if: "${{ !cancelled() }}"
+        working-directory: extensions/ql-vscode
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+        run: |
+          npm run lint-ci
+
+      - name: Upload ESLint results to Code Scanning
+        if: "${{ !cancelled() && !startsWith(github.head_ref, 'dependabot/')}}"
+        uses: github/codeql-action/upload-sarif@main
+        with:
+          sarif_file: extensions/ql-vscode/build/eslint.sarif
+          category: eslint
+
+  generated:
+    name: Check generated code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: extensions/ql-vscode/.nvmrc
+          cache: 'npm'
+          cache-dependency-path: extensions/ql-vscode/package-lock.json
+
+      - name: Install dependencies
+        working-directory: extensions/ql-vscode
+        run: |
+          npm ci
+        shell: bash
+
+      - name: Check that repo is clean
+        run: |
+          git diff --exit-code
+          git diff --exit-code --cached
+
+      - name: Generate code
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run generate
+
+      - name: Check for changes
+        run: |
+          git diff --exit-code
+          git diff --exit-code --cached
+
+  unit-test:
+    name: Unit Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      # Enable 8.3 filename creation. This is not required to run the extension but it is required for the unit tests to pass.
+      # This feature is currently enabled by default in Windows 11 for the C: drive and therefore we must maintain support for it.
+      # This setting needs to be enabled before files are created, i.e. before we checkout the repository.
+      - name: Enable 8.3 filenames
+        shell: pwsh
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: |
+          $shortNameEnableProcess = Start-Process -FilePath fsutil.exe -ArgumentList ('8dot3name', 'set', '0') -Wait -PassThru
+          $shortNameEnableExitCode = $shortNameEnableProcess.ExitCode
+          if ($shortNameEnableExitCode -ne 0) {
+              exit $shortNameEnableExitCode
+          }
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: extensions/ql-vscode/.nvmrc
+          cache: 'npm'
+          cache-dependency-path: extensions/ql-vscode/package-lock.json
+
+      - name: Install dependencies
+        working-directory: extensions/ql-vscode
+        run: |
+          npm ci
+        shell: bash
+
+      - name: Run unit tests
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run test:unit
+
+      - name: Run view tests
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run test:view
 
   test:
     name: Test
@@ -51,63 +206,112 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-node@v1
+      - uses: actions/setup-node@v7
         with:
-          node-version: '10.18.1'
+          node-version-file: extensions/ql-vscode/.nvmrc
+          cache: 'npm'
+          cache-dependency-path: extensions/ql-vscode/package-lock.json
 
-      # We have to build the dependencies in `lib` before running any tests.
       - name: Install dependencies
+        working-directory: extensions/ql-vscode
         run: |
-          cd extensions/ql-vscode
-          npm install
+          npm ci
         shell: bash
 
       - name: Build
+        working-directory: extensions/ql-vscode
+        env:
+          APP_INSIGHTS_KEY: '${{ secrets.APP_INSIGHTS_KEY }}'
         run: |
-          cd extensions/ql-vscode
           npm run build
         shell: bash
 
-      - name: Lint
-        run: |
-          cd extensions/ql-vscode
-          npm run lint
-
-      - name: Install CodeQL
-        run: |
-          mkdir codeql-home
-          curl -L --silent https://github.com/github/codeql-cli-binaries/releases/latest/download/codeql.zip -o codeql-home/codeql.zip
-          unzip -q -o codeql-home/codeql.zip -d codeql-home
-          unzip -q -o codeql-home/codeql.zip codeql/codeql.exe -d codeql-home
-          rm codeql-home/codeql.zip
-        shell: bash
-
-      - name: Run unit tests (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          cd extensions/ql-vscode
-          CODEQL_PATH=$GITHUB_WORKSPACE/codeql-home/codeql/codeql npm run test
-
-      - name: Run unit tests (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          cd extensions/ql-vscode
-          $env:CODEQL_PATH=$(Join-Path $env:GITHUB_WORKSPACE -ChildPath 'codeql-home/codeql/codeql.exe')
-          npm run test
-
       - name: Run integration tests (Linux)
         if: matrix.os == 'ubuntu-latest'
+        working-directory: extensions/ql-vscode
+        env:
+          VSCODE_CODEQL_GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
         run: |
-          cd extensions/ql-vscode
-          sudo apt-get install xvfb
-          /usr/bin/xvfb-run npm run integration
+          unset DBUS_SESSION_BUS_ADDRESS
+          /usr/bin/xvfb-run npm run test:vscode-integration
 
       - name: Run integration tests (Windows)
         if: matrix.os == 'windows-latest'
+        working-directory: extensions/ql-vscode
+        env:
+          VSCODE_CODEQL_GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
         run: |
-          cd extensions/ql-vscode
-          npm run integration
+          npm run test:vscode-integration
+
+  get-latest-cli-version:
+    name: Get latest CLI version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set the variable
+        id: set-variable
+        run: |
+          echo "cli-version=$(cat ./extensions/ql-vscode/supported_cli_versions.json | jq -rc '.[0]')" >> $GITHUB_OUTPUT
+          echo "$cli-version"
+    outputs:
+      cli-version: ${{ steps.set-variable.outputs.cli-version }}
+
+  cli-test:
+    name: CLI Test
+    runs-on: ${{ matrix.os }}
+    needs: [get-latest-cli-version]
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+      fail-fast: false
+    env:
+      CLI_VERSION: ${{ needs.get-latest-cli-version.outputs.cli-version }}
+      TEST_CODEQL_PATH: '${{ github.workspace }}/codeql'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: extensions/ql-vscode/.nvmrc
+          cache: 'npm'
+          cache-dependency-path: extensions/ql-vscode/package-lock.json
+
+      - name: Install dependencies
+        working-directory: extensions/ql-vscode
+        run: |
+          npm ci
+        shell: bash
+
+      - name: Build
+        working-directory: extensions/ql-vscode
+        run: |
+          npm run build
+        shell: bash
+
+      - name: Checkout QL
+        uses: actions/checkout@v7
+        with:
+          repository: github/codeql
+          ref: 'codeql-cli/${{ needs.get-latest-cli-version.outputs.cli-version }}'
+          path: codeql
+
+      - name: Run CLI tests (Linux)
+        working-directory: extensions/ql-vscode
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          unset DBUS_SESSION_BUS_ADDRESS
+          /usr/bin/xvfb-run npm run test:cli-integration
+
+      - name: Run CLI tests (Windows)
+        working-directory: extensions/ql-vscode
+        if: matrix.os == 'windows-latest'
+        run: |
+          npm run test:cli-integration
